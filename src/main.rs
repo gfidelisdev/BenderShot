@@ -1,0 +1,52 @@
+use anyhow::Result;
+use clap::Parser;
+use enhanced_shot::cli::{Cli, Commands};
+use enhanced_shot::{capture, indicator, ui};
+use std::sync::mpsc::channel;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
+    let args = Cli::parse();
+    let command = args.command.unwrap_or(Commands::Region);
+
+    match command {
+        Commands::Daemon => {
+            println!("Enhanced Shot daemon iniciado. Ícone ativo no painel superior.");
+            indicator::run_indicator().await?;
+        }
+        Commands::Edit { path } => {
+            let image = capture::CaptureBackend::load_image_from_path(&path)?;
+            open_editor_session(image)?;
+        }
+        Commands::Region => {
+            let image = capture::CaptureBackend::capture(capture::CaptureMode::Region).await?;
+            open_editor_session(image)?;
+        }
+        Commands::Full => {
+            let image = capture::CaptureBackend::capture(capture::CaptureMode::Fullscreen).await?;
+            open_editor_session(image)?;
+        }
+        Commands::Window => {
+            let image = capture::CaptureBackend::capture(capture::CaptureMode::Window).await?;
+            open_editor_session(image)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn open_editor_session(image: image::RgbaImage) -> Result<()> {
+    let (pin_tx, pin_rx) = channel::<image::RgbaImage>();
+
+    // Run the main editor window
+    let _ = ui::run_editor(image, Some(pin_tx));
+
+    // If an image was sent to be pinned, open the floating pin window
+    if let Ok(pinned_image) = pin_rx.try_recv() {
+        let _ = ui::run_pin_window(pinned_image);
+    }
+
+    Ok(())
+}

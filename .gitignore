@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Cargo
+# (Note: Cargo.lock is kept tracked as recommended for binary application crates)
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment & local overrides
+.env
+.env.*
+!*.example.env
+
+# Scratch and test files
+scratch/
+test_output.png
