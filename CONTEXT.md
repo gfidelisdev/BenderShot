@@ -18,6 +18,10 @@ _Avoid_: Grab type, snap mode
 The dedicated desktop window (`egui` + `winit`) styled after GNOME Libadwaita (supporting both Dark and Light themes) displaying the captured image with inspection and annotation tools in Spectacle style.
 _Avoid_: Modal overlay, freeze canvas, popup editor
 
+**Layer Stack**:
+The ordered collection of editable vector items displayed in the collapsible right-side Layers panel, defining render depth (Z-order), selection, and element manipulation.
+_Avoid_: Object list, drawing tree, shape manager
+
 **Annotation Item**:
 An individual non-destructive vector object (arrow, rectangle, text, badge, obfuscation region) stored in the session scene graph.
 _Avoid_: Drawing stroke, paint stamp, markup layer
@@ -31,7 +35,7 @@ The keyboard modifier (`Ctrl`) held during geometric shape dragging (Ellipse, Re
 _Avoid_: Shift lock, aspect lock
 
 **Inline Text Editor**:
-An interactive text input overlay spawned directly at canvas click coordinates with high-contrast halo rendering for universal readability across light and dark backgrounds.
+An interactive text input overlay spawned directly at canvas click coordinates with configurable font family, size, and background tags.
 _Avoid_: Floating caption, title label, prompt popup
 
 **Adwaita Theme**:

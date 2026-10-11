@@ -1,0 +1,26 @@
+[Desktop Entry]
+Name=Enhanced Shot
+Comment=Captura e anotação profissional de tela para Linux Wayland
+Exec=enhanced-shot region
+Icon=enhanced-shot
+Terminal=false
+Type=Application
+Categories=Utility;Graphics;Photography;
+Keywords=screenshot;captura;print;tela;anotação;
+Actions=Region;Full;Window;Daemon;
+
+[Desktop Action Region]
+Name=Capturar Região
+Exec=enhanced-shot region
+
+[Desktop Action Full]
+Name=Capturar Tela Inteira
+Exec=enhanced-shot full
+
+[Desktop Action Window]
+Name=Capturar Janela Ativa
+Exec=enhanced-shot window
+
+[Desktop Action Daemon]
+Name=Iniciar no Painel Superior (Daemon)
+Exec=enhanced-shot daemon

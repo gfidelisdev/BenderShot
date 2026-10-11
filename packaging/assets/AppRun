@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+# AppRun script for Enhanced Shot AppImage
+HERE="$(dirname "$(readlink -f "${0}")")"
+
+export PATH="${HERE}/usr/bin:${PATH}"
+export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+# Forward arguments or default to region capture
+if [ $# -eq 0 ]; then
+    exec "${HERE}/usr/bin/enhanced-shot" region
+else
+    exec "${HERE}/usr/bin/enhanced-shot" "$@"
+fi

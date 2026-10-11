@@ -1,29 +1,57 @@
-use crate::model::{AnnotationItem, ObfuscateKind, Scene};
+use crate::model::{AnnotationItem, FontFamily, ObfuscateKind, Scene, TextBackground};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{Rgba, RgbaImage};
 use std::sync::OnceLock;
 
-static SYSTEM_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
+static SANS_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
+static MONO_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
+static SERIF_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
-fn get_system_font() -> Option<&'static FontArc> {
-    SYSTEM_FONT
-        .get_or_init(|| {
-            let candidates = [
-                "/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf",
-                "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
-                "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
-            ];
-            for path in candidates {
-                if let Ok(bytes) = std::fs::read(path) {
-                    if let Ok(font) = FontArc::try_from_vec(bytes) {
-                        return Some(font);
-                    }
-                }
+fn load_first_available(candidates: &[&str]) -> Option<FontArc> {
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Ok(font) = FontArc::try_from_vec(bytes) {
+                return Some(font);
             }
-            None
-        })
-        .as_ref()
+        }
+    }
+    None
+}
+
+fn get_font(family: FontFamily) -> Option<&'static FontArc> {
+    match family {
+        FontFamily::Sans => SANS_FONT
+            .get_or_init(|| {
+                let candidates = [
+                    "/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf",
+                    "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+                    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+                ];
+                load_first_available(&candidates)
+            })
+            .as_ref(),
+        FontFamily::Monospace => MONO_FONT
+            .get_or_init(|| {
+                let candidates = [
+                    "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
+                    "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+                    "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+                ];
+                load_first_available(&candidates).or_else(|| get_font(FontFamily::Sans).cloned())
+            })
+            .as_ref(),
+        FontFamily::Serif => SERIF_FONT
+            .get_or_init(|| {
+                let candidates = [
+                    "/usr/share/fonts/google-noto/NotoSerif-Regular.ttf",
+                    "/usr/share/fonts/dejavu/DejaVuSerif.ttf",
+                    "/usr/share/fonts/liberation-serif/LiberationSerif-Regular.ttf",
+                ];
+                load_first_available(&candidates).or_else(|| get_font(FontFamily::Sans).cloned())
+            })
+            .as_ref(),
+    }
 }
 
 pub fn rasterize_scene(base: &RgbaImage, scene: &Scene) -> RgbaImage {
@@ -51,8 +79,8 @@ pub fn rasterize_scene(base: &RgbaImage, scene: &Scene) -> RgbaImage {
             AnnotationItem::StepBadge { pos, number, color, radius } => {
                 draw_step_badge(&mut canvas, *pos, *number, *color, *radius);
             }
-            AnnotationItem::Text { pos, text, color, font_size } => {
-                draw_rendered_text(&mut canvas, *pos, text, *color, *font_size);
+            AnnotationItem::Text { pos, text, color, font_size, family, bg_style } => {
+                draw_rendered_text(&mut canvas, *pos, text, *color, *font_size, *family, *bg_style);
             }
             AnnotationItem::Obfuscate { .. } => {}
         }
@@ -357,7 +385,15 @@ fn draw_step_badge(
     let text = number.to_string();
     let text_x = pos[0] - (radius * 0.35);
     let text_y = pos[1] - (radius * 0.45);
-    draw_rendered_text(img, [text_x, text_y], &text, [255, 255, 255, 255], radius * 1.0);
+    draw_rendered_text(
+        img,
+        [text_x, text_y],
+        &text,
+        [255, 255, 255, 255],
+        radius * 1.0,
+        FontFamily::Sans,
+        TextBackground::Halo,
+    );
 }
 
 fn draw_rendered_text(
@@ -366,18 +402,31 @@ fn draw_rendered_text(
     text: &str,
     color: [u8; 4],
     font_size: f32,
+    family: FontFamily,
+    bg_style: TextBackground,
 ) {
-    if let Some(font) = get_system_font() {
+    if let Some(font) = get_font(family) {
         let scale = PxScale::from(font_size);
         let scaled_font = font.as_scaled(scale);
 
-        // 1. Draw high contrast dark outline / shadow
-        let halo_color = [0u8, 0u8, 0u8, 220u8];
-        for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5), (1.0, 1.0), (-1.0, -1.0)] {
-            render_glyph_string(img, scaled_font, [pos[0] + dx, pos[1] + dy], text, halo_color, scale);
+        if bg_style == TextBackground::FilledTag {
+            let mut width = 0.0_f32;
+            for ch in text.chars() {
+                let glyph_id = scaled_font.glyph_id(ch);
+                width += scaled_font.h_advance(glyph_id);
+            }
+            let pad_x = 8.0_f32;
+            let pad_y = 4.0_f32;
+            let box_min = [pos[0] - pad_x, pos[1] - pad_y];
+            let box_max = [pos[0] + width + pad_x, pos[1] + font_size + pad_y];
+            draw_rectangle(img, box_min, box_max, [40, 40, 40, 255], 1.0, Some([24, 24, 24, 220]));
+        } else {
+            let halo_color = [0u8, 0u8, 0u8, 220u8];
+            for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5), (1.0, 1.0), (-1.0, -1.0)] {
+                render_glyph_string(img, scaled_font, [pos[0] + dx, pos[1] + dy], text, halo_color, scale);
+            }
         }
 
-        // 2. Draw foreground text
         render_glyph_string(img, scaled_font, pos, text, color, scale);
     } else {
         draw_simple_text_fallback(img, pos, text, color, font_size);

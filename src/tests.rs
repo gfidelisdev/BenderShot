@@ -3,7 +3,7 @@ use crate::rasterize::rasterize_scene;
 use image::{Rgba, RgbaImage};
 
 #[test]
-fn test_scene_undo_redo_and_badges() {
+fn test_scene_badges_and_recalc() {
     let mut scene = Scene::new();
     assert_eq!(scene.next_badge_number, 1);
 
@@ -25,15 +25,11 @@ fn test_scene_undo_redo_and_badges() {
     assert_eq!(scene.next_badge_number, 3);
     assert_eq!(scene.items.len(), 2);
 
-    // Test Undo
-    assert!(scene.undo());
+    // Test removing item and recalculating badges
+    scene.items.pop();
+    scene.recalc_badge_number();
     assert_eq!(scene.items.len(), 1);
     assert_eq!(scene.next_badge_number, 2);
-
-    // Test Redo
-    assert!(scene.redo());
-    assert_eq!(scene.items.len(), 2);
-    assert_eq!(scene.next_badge_number, 3);
 
     // Test Clear
     scene.clear();

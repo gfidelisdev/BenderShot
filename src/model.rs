@@ -20,6 +20,19 @@ pub enum ObfuscateKind {
     Pixelate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FontFamily {
+    Sans,
+    Monospace,
+    Serif,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextBackground {
+    Halo,
+    FilledTag,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AnnotationItem {
     Arrow {
@@ -47,6 +60,8 @@ pub enum AnnotationItem {
         text: String,
         color: [u8; 4],
         font_size: f32,
+        family: FontFamily,
+        bg_style: TextBackground,
     },
     StepBadge {
         pos: [f32; 2],
@@ -63,7 +78,60 @@ pub enum AnnotationItem {
 }
 
 impl AnnotationItem {
-    #[allow(dead_code)]
+    pub fn layer_name(&self) -> String {
+        match self {
+            AnnotationItem::Arrow { .. } => "↗ Seta".into(),
+            AnnotationItem::Rectangle { .. } => "▢ Retângulo".into(),
+            AnnotationItem::Ellipse { .. } => "◯ Elipse".into(),
+            AnnotationItem::Text { text, .. } => {
+                let preview = if text.len() > 14 {
+                    format!("{}...", &text[..14])
+                } else {
+                    text.clone()
+                };
+                format!("T \"{}\"", preview)
+            }
+            AnnotationItem::StepBadge { number, .. } => format!("① Passo {}", number),
+            AnnotationItem::Obfuscate { kind, .. } => match kind {
+                ObfuscateKind::Blur => "░ Blur".into(),
+                ObfuscateKind::Pixelate => "▦ Pixelate".into(),
+            },
+        }
+    }
+
+    pub fn color(&self) -> [u8; 4] {
+        match self {
+            AnnotationItem::Arrow { color, .. }
+            | AnnotationItem::Rectangle { color, .. }
+            | AnnotationItem::Ellipse { color, .. }
+            | AnnotationItem::Text { color, .. }
+            | AnnotationItem::StepBadge { color, .. } => *color,
+            AnnotationItem::Obfuscate { .. } => [128, 128, 128, 255],
+        }
+    }
+
+    pub fn set_color(&mut self, new_color: [u8; 4]) {
+        match self {
+            AnnotationItem::Arrow { color, .. }
+            | AnnotationItem::Rectangle { color, .. }
+            | AnnotationItem::Ellipse { color, .. }
+            | AnnotationItem::Text { color, .. }
+            | AnnotationItem::StepBadge { color, .. } => *color = new_color,
+            AnnotationItem::Obfuscate { .. } => {}
+        }
+    }
+
+    pub fn set_width(&mut self, new_width: f32) {
+        match self {
+            AnnotationItem::Arrow { width, .. }
+            | AnnotationItem::Rectangle { width, .. }
+            | AnnotationItem::Ellipse { width, .. } => *width = new_width,
+            AnnotationItem::Text { font_size, .. } => *font_size = (new_width * 6.0).max(18.0),
+            AnnotationItem::StepBadge { radius, .. } => *radius = (new_width * 3.5).max(12.0),
+            AnnotationItem::Obfuscate { strength, .. } => *strength = (new_width * 3.0) as u32,
+        }
+    }
+
     pub fn bounding_box(&self) -> ([f32; 2], [f32; 2]) {
         match self {
             AnnotationItem::Arrow { start, end, .. } => {
@@ -83,7 +151,7 @@ impl AnnotationItem {
                 ([min_x, min_y], [max_x, max_y])
             }
             AnnotationItem::Text { pos, font_size, text, .. } => {
-                let width = (text.len() as f32) * font_size * 0.6;
+                let width = (text.len() as f32) * font_size * 0.65;
                 let height = *font_size;
                 ([pos[0], pos[1]], [pos[0] + width, pos[1] + height])
             }
@@ -94,7 +162,6 @@ impl AnnotationItem {
         }
     }
 
-    #[allow(dead_code)]
     pub fn translate(&mut self, delta: [f32; 2]) {
         match self {
             AnnotationItem::Arrow { start, end, .. } => {
@@ -122,8 +189,6 @@ impl AnnotationItem {
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     pub items: Vec<AnnotationItem>,
-    pub undo_stack: Vec<Vec<AnnotationItem>>,
-    pub redo_stack: Vec<Vec<AnnotationItem>>,
     pub next_badge_number: u32,
 }
 
@@ -131,53 +196,23 @@ impl Scene {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
             next_badge_number: 1,
         }
     }
 
     pub fn push_item(&mut self, item: AnnotationItem) {
-        self.undo_stack.push(self.items.clone());
-        self.redo_stack.clear();
         if let AnnotationItem::StepBadge { number, .. } = &item {
             self.next_badge_number = self.next_badge_number.max(number + 1);
         }
         self.items.push(item);
     }
 
-    pub fn undo(&mut self) -> bool {
-        if let Some(prev) = self.undo_stack.pop() {
-            self.redo_stack.push(self.items.clone());
-            self.items = prev;
-            self.recalc_badge_number();
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn redo(&mut self) -> bool {
-        if let Some(next) = self.redo_stack.pop() {
-            self.undo_stack.push(self.items.clone());
-            self.items = next;
-            self.recalc_badge_number();
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn clear(&mut self) {
-        if !self.items.is_empty() {
-            self.undo_stack.push(self.items.clone());
-            self.redo_stack.clear();
-            self.items.clear();
-            self.next_badge_number = 1;
-        }
+        self.items.clear();
+        self.next_badge_number = 1;
     }
 
-    fn recalc_badge_number(&mut self) {
+    pub fn recalc_badge_number(&mut self) {
         let max_n = self
             .items
             .iter()

@@ -21,3 +21,13 @@
 # Scratch and test files
 scratch/
 test_output.png
+
+# Packaging build artifacts
+/packaging/dist/
+/packaging/appimage/appimagetool*
+/packaging/appimage/runtime*
+/packaging/appimage/*.AppDir
+/packaging/rpm/build/
+/packaging/deb/enhanced-shot_*
+/packaging/enhanced-shot-*
+

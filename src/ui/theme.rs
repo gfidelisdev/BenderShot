@@ -1,4 +1,58 @@
-use eframe::egui::{self, Color32, Margin, Rounding, Stroke, Vec2, Visuals};
+use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Margin, Rounding, Stroke, Vec2, Visuals};
+use std::sync::Once;
+
+static FONT_INIT: Once = Once::new();
+
+pub fn setup_fonts(ctx: &egui::Context) {
+    FONT_INIT.call_once(|| {
+        let mut fonts = FontDefinitions::default();
+
+        // 1. Try loading native Adwaita / Cantarell UI fonts for standard text
+        let ui_font_candidates = [
+            ("/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf", "adwaita_sans"),
+            ("/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf", "cantarell"),
+            ("/usr/share/fonts/google-noto/NotoSans-Regular.ttf", "noto_sans"),
+        ];
+
+        for (path, name) in ui_font_candidates {
+            if let Ok(bytes) = std::fs::read(path) {
+                fonts.font_data.insert(name.to_owned(), FontData::from_owned(bytes));
+                fonts
+                    .families
+                    .entry(FontFamily::Proportional)
+                    .or_default()
+                    .insert(0, name.to_owned());
+                break;
+            }
+        }
+
+        // 2. Load system symbol/emoji fonts as fallbacks for icons (Symbola, NotoEmoji, NotoSansSymbols, AdwaitaMono)
+        let symbol_font_candidates = [
+            ("/usr/share/fonts/gdouros-symbola/Symbola.ttf", "symbola"),
+            ("/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf", "noto_emoji"),
+            ("/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Regular.ttf", "adwaita_mono"),
+            ("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", "noto_symbols"),
+        ];
+
+        for (path, name) in symbol_font_candidates {
+            if let Ok(bytes) = std::fs::read(path) {
+                fonts.font_data.insert(name.to_owned(), FontData::from_owned(bytes));
+                fonts
+                    .families
+                    .entry(FontFamily::Proportional)
+                    .or_default()
+                    .push(name.to_owned());
+                fonts
+                    .families
+                    .entry(FontFamily::Monospace)
+                    .or_default()
+                    .push(name.to_owned());
+            }
+        }
+
+        ctx.set_fonts(fonts);
+    });
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdwaitaThemeMode {
@@ -7,6 +61,8 @@ pub enum AdwaitaThemeMode {
 }
 
 pub fn apply_adwaita_theme(ctx: &egui::Context, mode: AdwaitaThemeMode) {
+    setup_fonts(ctx);
+
     let mut style = (*ctx.style()).clone();
 
     // Comfortable GNOME spacing
