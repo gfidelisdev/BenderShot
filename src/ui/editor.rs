@@ -42,6 +42,12 @@ enum DragMode {
     AdjustCrop { handle: CropHandle },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShortcutTarget {
+    Screenshot,
+    ScreenRecord,
+}
+
 pub struct EditorApp {
     base_image: RgbaImage,
     undo_stack: Vec<EditorStateSnapshot>,
@@ -58,11 +64,26 @@ pub struct EditorApp {
     active_inline_text: Option<InlineTextState>,
     show_loupe: bool,
     show_layers_panel: bool,
+    show_settings_modal: bool,
+    recording_shortcut_target: Option<ShortcutTarget>,
+    candidate_shortcut: String,
+    candidate_record_shortcut: String,
+    shortcut_conflict: Option<String>,
+    record_shortcut_conflict: Option<String>,
     selected_item_index: Option<usize>,
     theme_mode: AdwaitaThemeMode,
     selected_font_family: FontFamily,
     selected_text_bg: TextBackground,
     smudge_carried_color: Option<[f32; 4]>,
+    color_erase_tolerance: f32,
+    freehand_points: Vec<[f32; 2]>,
+    video_source_path: Option<std::path::PathBuf>,
+    video_duration_ms: u64,
+    current_time_ms: u64,
+    is_playing: bool,
+    last_playback_tick: Option<std::time::Instant>,
+    frame_cache_dir: Option<std::path::PathBuf>,
+    last_cached_idx: u64,
     status_message: Option<(String, std::time::Instant)>,
     pin_sender: Option<Sender<RgbaImage>>,
 }
@@ -85,11 +106,26 @@ impl EditorApp {
             active_inline_text: None,
             show_loupe: true,
             show_layers_panel: true,
+            show_settings_modal: false,
+            recording_shortcut_target: None,
+            candidate_shortcut: crate::shortcuts::ShortcutManager::get_current_binding(),
+            candidate_record_shortcut: crate::shortcuts::ShortcutManager::get_current_record_binding(),
+            shortcut_conflict: None,
+            record_shortcut_conflict: None,
             selected_item_index: None,
             theme_mode: AdwaitaThemeMode::Dark,
             selected_font_family: FontFamily::Sans,
             selected_text_bg: TextBackground::Halo,
             smudge_carried_color: None,
+            color_erase_tolerance: 15.0,
+            freehand_points: Vec::new(),
+            video_source_path: None,
+            video_duration_ms: 0,
+            current_time_ms: 0,
+            is_playing: false,
+            last_playback_tick: None,
+            frame_cache_dir: None,
+            last_cached_idx: 0,
             status_message: None,
             pin_sender,
         }
@@ -227,6 +263,19 @@ impl EditorApp {
                         color: self.current_color,
                         width: self.stroke_width,
                         fill: None,
+                    });
+                    self.selected_item_index = Some(self.scene.items.len() - 1);
+                }
+            }
+            ToolMode::Highlight => {
+                let min = [p1[0].min(p2[0]), p1[1].min(p2[1])];
+                let max = [p1[0].max(p2[0]), p1[1].max(p2[1])];
+                if (max[0] - min[0]) > 4.0 && (max[1] - min[1]) > 4.0 {
+                    self.save_snapshot_for_undo();
+                    self.scene.push_item(AnnotationItem::Highlight {
+                        min,
+                        max,
+                        color: self.current_color,
                     });
                     self.selected_item_index = Some(self.scene.items.len() - 1);
                 }
@@ -394,39 +443,156 @@ impl eframe::App for EditorApp {
             self.texture = Some(ctx.load_texture("screenshot", color_image, egui::TextureOptions::LINEAR));
         }
 
-        // Global keyboard shortcuts
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
-            self.copy_and_exit(ctx);
-        }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
-            self.undo();
-        }
-        if ctx.input(|i| {
-            (i.modifiers.command && i.key_pressed(egui::Key::Y))
-                || (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z))
-        }) {
-            self.redo();
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
-            if self.active_inline_text.is_none() {
-                if let Some(idx) = self.selected_item_index {
-                    if idx < self.scene.items.len() {
-                        self.save_snapshot_for_undo();
-                        self.scene.items.remove(idx);
-                        self.selected_item_index = None;
-                        self.scene.recalc_badge_number();
-                        self.set_status("Objeto removido");
+        // Handle interactive key sequence recording when in Settings modal
+        if let Some(target) = self.recording_shortcut_target {
+            let escape_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+
+            if escape_pressed {
+                // Cancel recording mode without saving candidate
+                self.recording_shortcut_target = None;
+                self.set_status("Captura de atalho cancelada");
+            } else if enter_pressed {
+                // Confirm candidate key sequence
+                self.recording_shortcut_target = None;
+                match target {
+                    ShortcutTarget::Screenshot => {
+                        self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
+                            .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                    }
+                    ShortcutTarget::ScreenRecord => {
+                        self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
+                            .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                    }
+                }
+                self.set_status("Atalho gravado! Clique em 'Salvar Atalhos' para aplicar");
+            } else {
+                // Inspect input for pressed key combination
+                let new_binding = ctx.input(|i| {
+                    let mut parts = Vec::new();
+                    if i.modifiers.ctrl {
+                        parts.push("<Ctrl>");
+                    }
+                    if i.modifiers.alt {
+                        parts.push("<Alt>");
+                    }
+                    if i.modifiers.shift {
+                        parts.push("<Shift>");
+                    }
+                    if i.modifiers.mac_cmd {
+                        parts.push("<Super>");
+                    }
+
+                    // Look for non-modifier pressed keys in events
+                    for event in &i.events {
+                        if let egui::Event::Key { key, pressed: true, .. } = event {
+                            let key_name = match key {
+                                egui::Key::F1 => Some("F1"),
+                                egui::Key::F2 => Some("F2"),
+                                egui::Key::F3 => Some("F3"),
+                                egui::Key::F4 => Some("F4"),
+                                egui::Key::F5 => Some("F5"),
+                                egui::Key::F6 => Some("F6"),
+                                egui::Key::F7 => Some("F7"),
+                                egui::Key::F8 => Some("F8"),
+                                egui::Key::F9 => Some("F9"),
+                                egui::Key::F10 => Some("F10"),
+                                egui::Key::F11 => Some("F11"),
+                                egui::Key::F12 => Some("F12"),
+                                egui::Key::Space => Some("space"),
+                                egui::Key::A => Some("a"),
+                                egui::Key::B => Some("b"),
+                                egui::Key::C => Some("c"),
+                                egui::Key::D => Some("d"),
+                                egui::Key::E => Some("e"),
+                                egui::Key::F => Some("f"),
+                                egui::Key::G => Some("g"),
+                                egui::Key::H => Some("h"),
+                                egui::Key::I => Some("i"),
+                                egui::Key::J => Some("j"),
+                                egui::Key::K => Some("k"),
+                                egui::Key::L => Some("l"),
+                                egui::Key::M => Some("m"),
+                                egui::Key::N => Some("n"),
+                                egui::Key::O => Some("o"),
+                                egui::Key::P => Some("p"),
+                                egui::Key::Q => Some("q"),
+                                egui::Key::R => Some("r"),
+                                egui::Key::S => Some("s"),
+                                egui::Key::T => Some("t"),
+                                egui::Key::U => Some("u"),
+                                egui::Key::V => Some("v"),
+                                egui::Key::W => Some("w"),
+                                egui::Key::X => Some("x"),
+                                egui::Key::Y => Some("y"),
+                                egui::Key::Z => Some("z"),
+                                egui::Key::Num0 => Some("0"),
+                                egui::Key::Num1 => Some("1"),
+                                egui::Key::Num2 => Some("2"),
+                                egui::Key::Num3 => Some("3"),
+                                egui::Key::Num4 => Some("4"),
+                                egui::Key::Num5 => Some("5"),
+                                egui::Key::Num6 => Some("6"),
+                                egui::Key::Num7 => Some("7"),
+                                egui::Key::Num8 => Some("8"),
+                                egui::Key::Num9 => Some("9"),
+                                _ => None,
+                            };
+                            if let Some(name) = key_name {
+                                parts.push(name);
+                                return Some(parts.concat());
+                            }
+                        }
+                    }
+                    None
+                });
+
+                if let Some(binding) = new_binding {
+                    match target {
+                        ShortcutTarget::Screenshot => {
+                            self.candidate_shortcut = binding;
+                        }
+                        ShortcutTarget::ScreenRecord => {
+                            self.candidate_record_shortcut = binding;
+                        }
                     }
                 }
             }
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.active_inline_text.is_some() {
-                self.active_inline_text = None;
-            } else if self.selected_item_index.is_some() {
-                self.selected_item_index = None;
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            // Global keyboard shortcuts (only active when not recording key combination)
+            if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
+                self.copy_and_exit(ctx);
+            }
+            if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+                self.undo();
+            }
+            if ctx.input(|i| {
+                (i.modifiers.command && i.key_pressed(egui::Key::Y))
+                    || (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z))
+            }) {
+                self.redo();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+                if self.active_inline_text.is_none() {
+                    if let Some(idx) = self.selected_item_index {
+                        if idx < self.scene.items.len() {
+                            self.save_snapshot_for_undo();
+                            self.scene.items.remove(idx);
+                            self.selected_item_index = None;
+                            self.scene.recalc_badge_number();
+                            self.set_status("Objeto removido");
+                        }
+                    }
+                }
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if self.active_inline_text.is_some() {
+                    self.active_inline_text = None;
+                } else if self.selected_item_index.is_some() {
+                    self.selected_item_index = None;
+                } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
 
@@ -460,15 +626,30 @@ impl eframe::App for EditorApp {
                         };
 
                         tool_btn(ToolMode::Select, "↖ Sel");
+                        tool_btn(ToolMode::Freehand, "✏ Desenho");
                         tool_btn(ToolMode::Arrow, "↗ Seta");
                         tool_btn(ToolMode::Rectangle, "▢ Box");
                         tool_btn(ToolMode::Ellipse, "◯ Elipse");
+                        tool_btn(ToolMode::Highlight, "🖊 Grifar");
                         tool_btn(ToolMode::Text, "T Texto");
                         tool_btn(ToolMode::StepBadge, &format!("① Passo ({})", next_badge));
                         tool_btn(ToolMode::Blur, "░ Blur");
                         tool_btn(ToolMode::Pixelate, "▦ Pixel");
+                        tool_btn(ToolMode::Smudge, "≋ Smudge");
+                        tool_btn(ToolMode::ColorErase, "🧹 Apagar Cor");
                         tool_btn(ToolMode::Crop, "⯏ Trecho");
                     });
+
+                    // Contextual buttons when ColorErase tool is selected
+                    if self.current_tool == ToolMode::ColorErase {
+                        ui.separator();
+                        ui.group(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                            ui.label("Tolerância:");
+                            ui.add(egui::Slider::new(&mut self.color_erase_tolerance, 1.0..=60.0).suffix("%"));
+                            ui.label("Clique no pixel que deseja apagar");
+                        });
+                    }
 
                     // Contextual buttons when a Crop/Trecho region is selected
                     if let Some(crop_rect) = self.crop_selection {
@@ -625,6 +806,34 @@ impl eframe::App for EditorApp {
                         }
                     }
 
+                    if let Some(ref vid_path) = self.video_source_path {
+                        let export_vid_btn = egui::Button::new(
+                            egui::RichText::new("🎬 Exportar Vídeo")
+                                .color(Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(46, 194, 126)) // Adwaita Green
+                        .rounding(Rounding::same(8.0));
+
+                        if ui.add(export_vid_btn).on_hover_text("Exportar vídeo anotado em MP4").clicked() {
+                            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                            let out_path = std::path::PathBuf::from(home)
+                                .join("Pictures/Screenshots")
+                                .join(format!("screencast_{}.mp4", chrono::Local::now().format("%Y%m%d_%H%M%S")));
+                            if let Some(parent) = out_path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            match crate::video::VideoExporter::export_annotated_video(vid_path, &out_path, None) {
+                                Ok(()) => {
+                                    self.set_status(format!("Vídeo exportado com sucesso: {:?}", out_path));
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("Erro ao exportar vídeo: {e}"));
+                                }
+                            }
+                        }
+                    }
+
                     if ui.button("📌 Fixar").on_hover_text("Manter screenshot flutuando no topo").clicked() {
                         self.commit_inline_text();
                         let final_img = self.export_current_raster();
@@ -643,6 +852,17 @@ impl eframe::App for EditorApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Settings / Shortcuts dialog button
+                        if ui.button("⚙ Configurações").on_hover_text("Configurar atalhos globais de captura").clicked() {
+                            self.show_settings_modal = true;
+                            self.candidate_shortcut = crate::shortcuts::ShortcutManager::get_current_binding();
+                            self.candidate_record_shortcut = crate::shortcuts::ShortcutManager::get_current_record_binding();
+                            self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
+                                .map(|c| format!("Conflito com: {} ({})", c.key, c.description));
+                            self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
+                                .map(|c| format!("Conflito com: {} ({})", c.key, c.description));
+                        }
+
                         // Dark / Light Theme Toggle
                         let theme_icon = match self.theme_mode {
                             AdwaitaThemeMode::Dark => "☀️",
@@ -745,6 +965,131 @@ impl eframe::App for EditorApp {
                 });
         }
 
+        // Video Timeline Panel (Play/Pause, Scrubber, Temporal Duration Slider per item)
+        if self.video_source_path.is_some() && self.video_duration_ms > 0 {
+            egui::TopBottomPanel::bottom("video_timeline_panel")
+                .frame(Frame::none().fill(match self.theme_mode {
+                    AdwaitaThemeMode::Dark => Color32::from_rgb(36, 36, 36),
+                    AdwaitaThemeMode::Light => Color32::from_rgb(245, 245, 245),
+                }).inner_margin(Margin::symmetric(14.0, 8.0)))
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            // Play / Pause button
+                            let play_icon = if self.is_playing { "⏸ Pausar" } else { "▶ Reproduzir" };
+                            if ui.button(play_icon).clicked() {
+                                self.is_playing = !self.is_playing;
+                                self.last_playback_tick = Some(std::time::Instant::now());
+                            }
+
+                            // Time display
+                            let cur_s = (self.current_time_ms as f64) / 1000.0;
+                            let total_s = (self.video_duration_ms as f64) / 1000.0;
+                            ui.label(format!("{:.1}s / {:.1}s", cur_s, total_s));
+
+                            // Scrubber
+                            let mut slider_ms = self.current_time_ms;
+                            let slider_resp = ui.add(
+                                egui::Slider::new(&mut slider_ms, 0..=self.video_duration_ms)
+                                    .show_value(false)
+                            );
+                            if slider_resp.changed() {
+                                self.current_time_ms = slider_ms;
+                                self.last_cached_idx = 0;
+                                // Extract frame at new time
+                                if let Some(ref path) = self.video_source_path {
+                                    if let Ok(frame) = crate::video::VideoExporter::extract_frame_at(path, self.current_time_ms) {
+                                        self.base_image = frame;
+                                        self.texture = None;
+                                    }
+                                }
+                            }
+
+                            // Loop playback if playing
+                            if self.is_playing {
+                                if let Some(last) = self.last_playback_tick {
+                                    let dt = last.elapsed().as_millis() as u64;
+                                    if dt > 30 {
+                                        self.current_time_ms += dt;
+                                        if self.current_time_ms >= self.video_duration_ms {
+                                            self.current_time_ms = 0;
+                                        }
+                                        self.last_playback_tick = Some(std::time::Instant::now());
+                                        let idx = self.current_time_ms * PLAYBACK_FPS / 1000 + 1;
+                                        if idx != self.last_cached_idx {
+                                            if let Some(ref dir) = self.frame_cache_dir {
+                                                let fp = dir.join(format!("f{:05}.jpg", idx));
+                                                if let Ok(img) = image::open(&fp) {
+                                                    self.base_image = img.to_rgba8();
+                                                    self.texture = None;
+                                                    self.last_cached_idx = idx;
+                                                }
+                                            } else if let Some(ref path) = self.video_source_path {
+                                                if let Ok(frame) = crate::video::VideoExporter::extract_frame_at(path, self.current_time_ms) {
+                                                    self.base_image = frame;
+                                                    self.texture = None;
+                                                    self.last_cached_idx = idx;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ctx.request_repaint();
+                            }
+                        });
+
+                        // Temporal Annotation Span configuration for selected item
+                        if let Some(idx) = self.selected_item_index {
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⏱ Intervalo de Exibição do Objeto Selecionado:").strong().size(11.0));
+                                let current_span = self.scene.spans.get(idx).and_then(|s| *s);
+                                let mut has_span = current_span.is_some();
+                                if ui.checkbox(&mut has_span, "Limitar tempo").clicked() {
+                                    if has_span {
+                                        let start = self.current_time_ms;
+                                        let end = (start + 2000).min(self.video_duration_ms);
+                                        if idx < self.scene.spans.len() {
+                                            self.scene.spans[idx] = Some(crate::model::AnnotationSpan::new(start, end));
+                                        }
+                                    } else if idx < self.scene.spans.len() {
+                                        self.scene.spans[idx] = None;
+                                    }
+                                }
+
+                                if let Some(mut span) = current_span {
+                                    ui.label("Início:");
+                                    let mut s_val = span.start_ms;
+                                    if ui.add(egui::DragValue::new(&mut s_val).range(0..=span.end_ms).suffix("ms")).changed() {
+                                        span.start_ms = s_val;
+                                        self.scene.spans[idx] = Some(span);
+                                    }
+
+                                    ui.label("Fim:");
+                                    let mut e_val = span.end_ms;
+                                    if ui.add(egui::DragValue::new(&mut e_val).range(span.start_ms..=self.video_duration_ms).suffix("ms")).changed() {
+                                        span.end_ms = e_val;
+                                        self.scene.spans[idx] = Some(span);
+                                    }
+
+                                    if ui.button("Definir Início Aqui").clicked() {
+                                        span.start_ms = self.current_time_ms;
+                                        if span.end_ms < span.start_ms {
+                                            span.end_ms = (span.start_ms + 1000).min(self.video_duration_ms);
+                                        }
+                                        self.scene.spans[idx] = Some(span);
+                                    }
+                                    if ui.button("Definir Fim Aqui").clicked() {
+                                        span.end_ms = self.current_time_ms.max(span.start_ms + 100);
+                                        self.scene.spans[idx] = Some(span);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                });
+        }
+
         // Bottom Status Toast
         egui::TopBottomPanel::bottom("adwaita_footer")
             .frame(Frame::none().fill(header_bg).inner_margin(Margin::symmetric(14.0, 6.0)))
@@ -823,9 +1168,22 @@ impl eframe::App for EditorApp {
 
             // 2. Draw existing vector annotations
             for (idx, item) in self.scene.items.iter().enumerate() {
+                // If in video editing mode, check if item is temporally visible
+                if self.video_source_path.is_some() && !self.scene.is_item_active_at(idx, self.current_time_ms) {
+                    continue;
+                }
+
                 let is_selected = self.selected_item_index == Some(idx);
 
                 match item {
+                    AnnotationItem::Freehand { points, color, width } => {
+                        if points.len() >= 2 {
+                            let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                            let stroke = Stroke::new(to_screen_size(*width), col);
+                            let screen_points: Vec<Pos2> = points.iter().map(|p| to_screen(*p)).collect();
+                            painter.add(egui::Shape::line(screen_points, stroke));
+                        }
+                    }
                     AnnotationItem::Arrow { start, end, color, width } => {
                         let p_start = to_screen(*start);
                         let p_end = to_screen(*end);
@@ -863,6 +1221,14 @@ impl eframe::App for EditorApp {
                             })
                             .collect();
                         painter.add(egui::Shape::line(points, stroke));
+                    }
+                    AnnotationItem::Highlight { min, max, color } => {
+                        let s_min = to_screen(*min);
+                        let s_max = to_screen(*max);
+                        let rect = Rect::from_min_max(s_min, s_max);
+                        // Semi-transparent highlight fill (alpha 100/255 ~= 39%)
+                        let highlight_col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], 100);
+                        painter.rect_filled(rect, Rounding::ZERO, highlight_col);
                     }
                     AnnotationItem::StepBadge { pos, number, color, radius } => {
                         let center = to_screen(*pos);
@@ -991,7 +1357,22 @@ impl eframe::App for EditorApp {
                         let img_x = ((click_pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w);
                         let img_y = ((click_pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h);
 
-                        if self.current_tool == ToolMode::StepBadge {
+                        if self.current_tool == ToolMode::ColorErase {
+                            let px = (img_x as u32).min(self.base_image.width() - 1);
+                            let py = (img_y as u32).min(self.base_image.height() - 1);
+                            let target_pixel = *self.base_image.get_pixel(px, py);
+                            self.save_snapshot_for_undo();
+                            crate::rasterize::apply_color_erase(
+                                &mut self.base_image,
+                                target_pixel.0,
+                                self.color_erase_tolerance,
+                            );
+                            self.texture = None;
+                            self.set_status(format!(
+                                "Cor [{}, {}, {}] apagada com tolerância {:.0}%",
+                                target_pixel[0], target_pixel[1], target_pixel[2], self.color_erase_tolerance
+                            ));
+                        } else if self.current_tool == ToolMode::StepBadge {
                             self.commit_inline_text();
                             self.save_snapshot_for_undo();
                             self.scene.push_item(AnnotationItem::StepBadge {
@@ -1086,6 +1467,13 @@ impl eframe::App for EditorApp {
                         if self.current_tool == ToolMode::Smudge {
                             self.save_snapshot_for_undo();
                             self.smudge_carried_color = None;
+                        } else if self.current_tool == ToolMode::Freehand {
+                            self.save_snapshot_for_undo();
+                            let img_pos = [
+                                ((pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w),
+                                ((pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h),
+                            ];
+                            self.freehand_points = vec![img_pos];
                         } else if self.current_tool == ToolMode::Crop && self.crop_selection.is_some() {
                             let crop = self.crop_selection.unwrap();
                             let s_min = to_screen([crop.min.x, crop.min.y]);
@@ -1153,6 +1541,18 @@ impl eframe::App for EditorApp {
                                     &mut self.smudge_carried_color,
                                 );
                                 self.texture = None;
+                            }
+                        } else if self.current_tool == ToolMode::Freehand {
+                            let img_pos = [
+                                ((pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w),
+                                ((pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h),
+                            ];
+                            if self.freehand_points.last().map_or(true, |last| {
+                                let dx = last[0] - img_pos[0];
+                                let dy = last[1] - img_pos[1];
+                                (dx * dx + dy * dy) > 4.0
+                            }) {
+                                self.freehand_points.push(img_pos);
                             }
                         } else if self.current_tool == ToolMode::Crop {
                             if let (DragMode::AdjustCrop { handle }, Some(prev_pos)) = (self.drag_mode, self.drag_current) {
@@ -1226,6 +1626,21 @@ impl eframe::App for EditorApp {
                         self.drag_current = None;
                         self.drag_mode = DragMode::None;
                         self.set_status("Smudge aplicado");
+                    } else if self.current_tool == ToolMode::Freehand {
+                        if self.freehand_points.len() >= 2 {
+                            self.scene.push_item(AnnotationItem::Freehand {
+                                points: std::mem::take(&mut self.freehand_points),
+                                color: self.current_color,
+                                width: self.stroke_width,
+                            });
+                            self.selected_item_index = Some(self.scene.items.len() - 1);
+                            self.set_status("Desenho livre adicionado");
+                        } else {
+                            self.freehand_points.clear();
+                        }
+                        self.drag_start = None;
+                        self.drag_current = None;
+                        self.drag_mode = DragMode::None;
                     } else if self.current_tool == ToolMode::Select {
                         self.drag_start = None;
                         self.drag_current = None;
@@ -1268,6 +1683,12 @@ impl eframe::App for EditorApp {
 
                 let stroke = Stroke::new(to_screen_size(self.stroke_width), self.color32());
                 match self.current_tool {
+                    ToolMode::Freehand => {
+                        if self.freehand_points.len() >= 2 {
+                            let screen_points: Vec<Pos2> = self.freehand_points.iter().map(|p| to_screen(*p)).collect();
+                            painter.add(egui::Shape::line(screen_points, stroke));
+                        }
+                    }
                     ToolMode::Arrow => {
                         painter.line_segment([start, curr], stroke);
                         let dir = (curr - start).normalized();
@@ -1283,6 +1704,17 @@ impl eframe::App for EditorApp {
                     ToolMode::Rectangle | ToolMode::Crop => {
                         let r = Rect::from_two_pos(start, curr);
                         painter.rect_stroke(r, Rounding::same(3.0), stroke);
+                    }
+                    ToolMode::Highlight => {
+                        let r = Rect::from_two_pos(start, curr);
+                        let highlight_col = Color32::from_rgba_unmultiplied(
+                            self.current_color[0],
+                            self.current_color[1],
+                            self.current_color[2],
+                            100,
+                        );
+                        painter.rect_filled(r, Rounding::ZERO, highlight_col);
+                        painter.rect_stroke(r, Rounding::ZERO, Stroke::new(1.0_f32, self.color32()));
                     }
                     ToolMode::Ellipse => {
                         let cx = (start.x + curr.x) / 2.0;
@@ -1353,6 +1785,169 @@ impl eframe::App for EditorApp {
                 }
             }
         });
+
+        // 6. Settings Modal (Global Shortcuts Configuration and Conflict Detection)
+        if self.show_settings_modal {
+            let mut close_modal = false;
+            egui::Window::new("⚙ Configurações de Atalhos")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_width(450.0);
+                    ui.heading("Atalhos do Ambiente de Trabalho (DE)");
+                    ui.add_space(8.0);
+
+                    // 1. Screenshot Shortcut
+                    ui.label(egui::RichText::new("📷 Atalho para Captura de Tela:").strong());
+                    ui.horizontal(|ui| {
+                        let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::Screenshot);
+                        let btn_label = if is_rec {
+                            "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
+                        } else {
+                            "🎹 Pressionar Teclas para Definir"
+                        };
+                        let btn = egui::Button::new(
+                            egui::RichText::new(btn_label)
+                                .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
+                                .strong(),
+                        )
+                        .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(53, 132, 228) })
+                        .rounding(Rounding::same(6.0));
+
+                        if ui.add(btn).clicked() {
+                            if is_rec {
+                                self.recording_shortcut_target = None;
+                            } else {
+                                self.recording_shortcut_target = Some(ShortcutTarget::Screenshot);
+                            }
+                        }
+
+                        let response = ui.text_edit_singleline(&mut self.candidate_shortcut);
+                        if response.changed() {
+                            self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
+                                .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                        }
+                    });
+
+                    ui.add_space(2.0);
+                    if let Some(ref conflict) = self.shortcut_conflict {
+                        ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
+                    } else {
+                        ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Predefinições comuns para Captura:").italics());
+                    ui.horizontal_wrapped(|ui| {
+                        let mut quick_btn = |label: &str| {
+                            if ui.button(label).clicked() {
+                                self.candidate_shortcut = label.to_string();
+                                self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
+                                    .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                            }
+                        };
+                        quick_btn("Print");
+                        quick_btn("<Shift>Print");
+                        quick_btn("<Ctrl>Print");
+                        quick_btn("<Super><Shift>S");
+                    });
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    // 2. Screen Recording Shortcut
+                    ui.label(egui::RichText::new("🎥 Atalho para Iniciar / Parar Gravação de Vídeo:").strong());
+                    ui.horizontal(|ui| {
+                        let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::ScreenRecord);
+                        let btn_label = if is_rec {
+                            "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
+                        } else {
+                            "🎹 Pressionar Teclas para Definir"
+                        };
+                        let btn = egui::Button::new(
+                            egui::RichText::new(btn_label)
+                                .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
+                                .strong(),
+                        )
+                        .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(46, 194, 126) })
+                        .rounding(Rounding::same(6.0));
+
+                        if ui.add(btn).clicked() {
+                            if is_rec {
+                                self.recording_shortcut_target = None;
+                            } else {
+                                self.recording_shortcut_target = Some(ShortcutTarget::ScreenRecord);
+                            }
+                        }
+
+                        let response_rec = ui.text_edit_singleline(&mut self.candidate_record_shortcut);
+                        if response_rec.changed() {
+                            self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
+                                .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                        }
+                    });
+
+                    ui.add_space(2.0);
+                    if let Some(ref conflict) = self.record_shortcut_conflict {
+                        ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
+                    } else {
+                        ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
+                    }
+
+                    if self.recording_shortcut_target.is_some() {
+                        ui.add_space(6.0);
+                        ui.colored_label(
+                            Color32::from_rgb(255, 120, 0),
+                            "👉 Pressione no teclado a combinação desejada. Tecle ENTER para confirmar ou ESC para cancelar.",
+                        );
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Predefinições comuns para Gravação:").italics());
+                    ui.horizontal_wrapped(|ui| {
+                        let mut quick_btn = |label: &str| {
+                            if ui.button(label).clicked() {
+                                self.candidate_record_shortcut = label.to_string();
+                                self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
+                                    .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                            }
+                        };
+                        quick_btn("<Ctrl>Print");
+                        quick_btn("<Ctrl><Shift>R");
+                        quick_btn("<Super><Alt>R");
+                        quick_btn("<Control><Alt>v");
+                    });
+
+                    ui.add_space(14.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button(egui::RichText::new("Salvar Atalhos").strong()).clicked() {
+                            let mut ok = true;
+                            if let Err(e) = crate::shortcuts::ShortcutManager::set_binding(&self.candidate_shortcut) {
+                                self.set_status(format!("Erro ao definir atalho de captura: {}", e));
+                                ok = false;
+                            }
+                            if let Err(e) = crate::shortcuts::ShortcutManager::set_record_binding(&self.candidate_record_shortcut) {
+                                self.set_status(format!("Erro ao definir atalho de gravação: {}", e));
+                                ok = false;
+                            }
+                            if ok {
+                                self.set_status("Atalhos atualizados com sucesso!");
+                                close_modal = true;
+                            }
+                        }
+                        if ui.button("Fechar").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+
+            if close_modal {
+                self.show_settings_modal = false;
+            }
+        }
     }
 }
 
@@ -1374,3 +1969,56 @@ pub fn run_editor(image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Re
         Box::new(|_cc| Ok(Box::new(EditorApp::new(image, pin_sender)))),
     )
 }
+
+pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Error> {
+    let duration_ms = crate::video::VideoExporter::probe_video_duration(&video_path).unwrap_or(5000);
+    let initial_frame = crate::video::VideoExporter::extract_frame_at(&video_path, 0)
+        .unwrap_or_else(|_| RgbaImage::new(1280, 720));
+
+    let width = (initial_frame.width() as f32).clamp(700.0, 1600.0) + 220.0;
+    let height = (initial_frame.height() as f32).clamp(500.0, 1000.0) + 160.0;
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Enhanced Shot - Editor de Vídeo")
+            .with_inner_size([width, height])
+            .with_min_inner_size([750.0, 520.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Enhanced Shot - Editor de Vídeo",
+        options,
+        Box::new(move |_cc| {
+            let mut app = EditorApp::new(initial_frame, None);
+            app.video_source_path = Some(video_path);
+            app.video_duration_ms = duration_ms;
+            app.current_time_ms = 0;
+            // Pre-extract frames in background (ffmpeg runs once) so playback doesn't spawn ffmpeg per frame
+            let dir = std::path::PathBuf::from(format!("/tmp/enhanced-shot-frames-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            if std::fs::create_dir_all(&dir).is_ok() {
+                let pattern = dir.join("f%05d.jpg");
+                let spawned = std::process::Command::new("ffmpeg")
+                    .args([
+                        "-y", "-loglevel", "error",
+                        "-i", app.video_source_path.as_ref().and_then(|p| p.to_str()).unwrap_or_default(),
+                        "-vf", &format!("fps={}", PLAYBACK_FPS),
+                        "-q:v", "6",
+                        pattern.to_str().unwrap_or_default(),
+                    ])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                if spawned.is_ok() {
+                    app.frame_cache_dir = Some(dir);
+                }
+            }
+            Ok(Box::new(app))
+        }),
+    )
+}
+
+
+const PLAYBACK_FPS: u64 = 10;

@@ -68,6 +68,28 @@ _Avoid_: Finger smear, rub tool, blur pen
 A pixel-magnifying inspection view with color value readout (Hex/RGB) for precise region selection and color sampling.
 _Avoid_: Zoom preview, color picker magnifier
 
+### Video Recording & Timeline
+
+**Recording Session**:
+The active screen capture process utilizing Wayland XDG Desktop Portal ScreenCast and PipeWire to stream frames into an intermediate high-efficiency video container.
+_Avoid_: Video grab, screencast job, desktop stream
+
+**Recording Pill**:
+A compact, floating, always-on-top indicator widget displayed during an active Recording Session, presenting the elapsed duration and a stop action button.
+_Avoid_: Floating bar, record bubble, tray timer
+
+**Video Timeline**:
+The multi-track time ruler and scrubbing component displayed along the lower edge of the Editor Window during video editing, showing time marks, playhead position, and annotation spans.
+_Avoid_: Track editor, time bar, player seek
+
+**Annotation Span**:
+The temporal validity interval (`[start_ms, end_ms]`) associated with an Annotation Item, defining precisely when the element is rendered and active during video playback and export.
+_Avoid_: Keyframe duration, layer time, visibility mark
+
+**Video Export Pipeline**:
+The rendering process that burns active Annotation Spans over the underlying video frame stream and encodes the result via `ffmpeg` to MP4, WebM, or animated GIF.
+_Avoid_: Video burner, converter, save video
+
 ### Export & Storage
 
 **Auto-Save Destination**:
@@ -77,3 +99,4 @@ _Avoid_: Output directory, dump folder
 **Clipboard Pipeline**:
 The Wayland clipboard export channel delivering rasterized PNG byte buffers.
 _Avoid_: Copy paste handler, clipboard transfer
+

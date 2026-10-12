@@ -32,6 +32,20 @@ async fn main() -> Result<()> {
             let image = capture::CaptureBackend::capture(capture::CaptureMode::Window).await?;
             open_editor_session(image)?;
         }
+        Commands::Record => {
+            if enhanced_shot::video::ScreenRecorder::is_recording() {
+                println!("Finalizando gravação de tela...");
+                let video_path = enhanced_shot::video::ScreenRecorder::stop_recording()?;
+                println!("Gravação concluída. Abrindo editor de vídeo para: {:?}", video_path);
+                enhanced_shot::ui::editor::run_video_editor(video_path)
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            } else {
+                enhanced_shot::video::ScreenRecorder::start_recording()?;
+            }
+        }
+        Commands::RecordWorker => {
+            enhanced_shot::video::ScreenRecorder::run_worker().await?;
+        }
     }
 
     Ok(())

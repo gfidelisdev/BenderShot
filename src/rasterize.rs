@@ -67,6 +67,9 @@ pub fn rasterize_scene(base: &RgbaImage, scene: &Scene) -> RgbaImage {
     // 2. Render vector annotations over the canvas
     for item in &scene.items {
         match item {
+            AnnotationItem::Freehand { points, color, width } => {
+                draw_freehand(&mut canvas, points, *color, *width);
+            }
             AnnotationItem::Arrow { start, end, color, width } => {
                 draw_arrow(&mut canvas, *start, *end, *color, *width);
             }
@@ -75,6 +78,9 @@ pub fn rasterize_scene(base: &RgbaImage, scene: &Scene) -> RgbaImage {
             }
             AnnotationItem::Ellipse { min, max, color, width, fill } => {
                 draw_ellipse(&mut canvas, *min, *max, *color, *width, *fill);
+            }
+            AnnotationItem::Highlight { min, max, color } => {
+                draw_highlight(&mut canvas, *min, *max, *color);
             }
             AnnotationItem::StepBadge { pos, number, color, radius } => {
                 draw_step_badge(&mut canvas, *pos, *number, *color, *radius);
@@ -85,6 +91,7 @@ pub fn rasterize_scene(base: &RgbaImage, scene: &Scene) -> RgbaImage {
             AnnotationItem::Obfuscate { .. } => {}
         }
     }
+
 
     canvas
 }
@@ -258,6 +265,54 @@ pub fn apply_smudge_step(
     }
 }
 
+fn draw_freehand(img: &mut RgbaImage, points: &[[f32; 2]], color: [u8; 4], width: f32) {
+    if points.is_empty() {
+        return;
+    }
+    let col = Rgba(color);
+    if points.len() == 1 {
+        let p = points[0];
+        let r = (width / 2.0).max(1.0);
+        let x0 = (p[0] - r).max(0.0) as u32;
+        let y0 = (p[1] - r).max(0.0) as u32;
+        let x1 = (p[0] + r).min(img.width() as f32 - 1.0) as u32;
+        let y1 = (p[1] + r).min(img.height() as f32 - 1.0) as u32;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if (x as f32 - p[0]).powi(2) + (y as f32 - p[1]).powi(2) <= r * r {
+                    img.put_pixel(x, y, col);
+                }
+            }
+        }
+        return;
+    }
+    for window in points.windows(2) {
+        draw_line_thick(img, window[0], window[1], col, width);
+    }
+}
+
+pub fn apply_color_erase(
+    img: &mut RgbaImage,
+    target_color: [u8; 4],
+    tolerance: f32, // 0.0 to 100.0 (Euclidean distance threshold)
+) {
+    let t_r = target_color[0] as f32;
+    let t_g = target_color[1] as f32;
+    let t_b = target_color[2] as f32;
+    let threshold_sq = (tolerance * 2.55).powi(2);
+
+    for pixel in img.pixels_mut() {
+        let dr = pixel[0] as f32 - t_r;
+        let dg = pixel[1] as f32 - t_g;
+        let db = pixel[2] as f32 - t_b;
+        let dist_sq = dr * dr + dg * dg + db * db;
+        if dist_sq <= threshold_sq {
+            // Erase: transparent pixel
+            *pixel = Rgba([0, 0, 0, 0]);
+        }
+    }
+}
+
 fn draw_arrow(img: &mut RgbaImage, start: [f32; 2], end: [f32; 2], color: [u8; 4], width: f32) {
     let col = Rgba(color);
     draw_line_thick(img, start, end, col, width);
@@ -313,6 +368,35 @@ fn draw_rectangle(
     draw_line_thick(img, [x1, y0], [x1, y1], col, width);
     draw_line_thick(img, [x1, y1], [x0, y1], col, width);
     draw_line_thick(img, [x0, y1], [x0, y0], col, width);
+}
+
+fn draw_highlight(img: &mut RgbaImage, min: [f32; 2], max: [f32; 2], color: [u8; 4]) {
+    let (w, h) = img.dimensions();
+    let x0 = (min[0].min(max[0]).max(0.0) as u32).min(w);
+    let y0 = (min[1].min(max[1]).max(0.0) as u32).min(h);
+    let x1 = (min[0].max(max[0]).max(0.0) as u32).min(w);
+    let y1 = (min[1].max(max[1]).max(0.0) as u32).min(h);
+
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    // Alpha blend with 35% opacity
+    let alpha = 0.38_f32;
+    let inv_alpha = 1.0 - alpha;
+    let h_r = color[0] as f32;
+    let h_g = color[1] as f32;
+    let h_b = color[2] as f32;
+
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let orig = *img.get_pixel(x, y);
+            let nr = (orig[0] as f32 * inv_alpha + h_r * alpha) as u8;
+            let ng = (orig[1] as f32 * inv_alpha + h_g * alpha) as u8;
+            let nb = (orig[2] as f32 * inv_alpha + h_b * alpha) as u8;
+            img.put_pixel(x, y, Rgba([nr, ng, nb, orig[3]]));
+        }
+    }
 }
 
 fn draw_ellipse(

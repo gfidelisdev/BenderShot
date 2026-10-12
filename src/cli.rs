@@ -28,4 +28,10 @@ pub enum Commands {
         /// Path to the image file to open
         path: PathBuf,
     },
+
+    /// Toggle screen recording (starts recording or stops active recording and opens video editor)
+    Record,
+
+    #[command(hide = true)]
+    RecordWorker,
 }
