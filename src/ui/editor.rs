@@ -2357,10 +2357,12 @@ impl eframe::App for EditorApp {
                                     .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
                             }
                         };
+                        quick_btn("Ctrl+Print");
+                        quick_btn("<Ctrl>Print");
+                        quick_btn("Ctrl+Shift+S");
+                        quick_btn("<Super><Shift>S");
                         quick_btn("Print");
                         quick_btn("<Shift>Print");
-                        quick_btn("<Ctrl>Print");
-                        quick_btn("<Super><Shift>S");
                     });
 
                     ui.add_space(10.0);

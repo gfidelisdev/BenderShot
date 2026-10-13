@@ -350,5 +350,14 @@ fn test_windows_parse_hotkey() {
     let p4 = ShortcutManager::parse_hotkey("<Super><Alt>R").expect("Should parse <Super><Alt>R");
     assert_eq!(p4.0, MOD_NOREPEAT | MOD_WIN | MOD_ALT);
     assert_eq!(p4.1, 0x52); // 'R'
+
+    let p5 = ShortcutManager::parse_hotkey("Ctrl+Print").expect("Should parse Ctrl+Print");
+    assert_eq!(p5.0, MOD_NOREPEAT | MOD_CONTROL);
+    assert_eq!(p5.1, VK_SNAPSHOT as u32);
+
+    let p6 = ShortcutManager::parse_hotkey("<Ctrl>Print").expect("Should parse <Ctrl>Print");
+    assert_eq!(p6, p5);
+
+    assert_eq!(ShortcutManager::get_current_binding(), "Ctrl+Print");
 }
 

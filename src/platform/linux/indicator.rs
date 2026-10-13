@@ -48,6 +48,24 @@ impl Tray for BenderShotTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
+                label: "🎬 Gravar Tela (Vídeo)".into(),
+                activate: Box::new(|_| {
+                    spawn_record();
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "⚙️ Configurações".into(),
+                activate: Box::new(|_| {
+                    spawn_settings();
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
                 label: "❌ Sair".into(),
                 activate: Box::new(|_| {
                     std::process::exit(0);
@@ -67,6 +85,18 @@ fn spawn_capture(mode: CaptureMode) {
             CaptureMode::Window => "window",
         };
         let _ = Command::new(exe).arg(arg).spawn();
+    }
+}
+
+fn spawn_record() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).arg("record").spawn();
+    }
+}
+
+fn spawn_settings() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).arg("settings").spawn();
     }
 }
 

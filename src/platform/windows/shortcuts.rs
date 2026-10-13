@@ -69,10 +69,14 @@ impl ShortcutManager {
         None
     }
 
-    /// Retrieves current BenderShot keybinding on Windows (defaults to Ctrl+Shift+S)
+    /// Retrieves current BenderShot keybinding on Windows (defaults to Ctrl+Print)
     pub fn get_current_binding() -> String {
         let saved = read_saved_shortcuts();
-        saved.capture.unwrap_or_else(|| "Ctrl+Shift+S".to_string())
+        match saved.capture {
+            Some(ref s) if s.trim().eq_ignore_ascii_case("print") => "Ctrl+Print".to_string(),
+            Some(s) if !s.is_empty() => s,
+            _ => "Ctrl+Print".to_string(),
+        }
     }
 
     /// Sets BenderShot capture keybinding on Windows

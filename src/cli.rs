@@ -32,6 +32,10 @@ pub enum Commands {
     /// Toggle screen recording (starts recording or stops active recording and opens video editor)
     Record,
 
+    /// Open settings dialog for shortcuts and preferences
+    #[command(alias = "config")]
+    Settings,
+
     #[command(hide = true)]
     RecordWorker,
 }

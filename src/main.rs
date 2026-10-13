@@ -54,6 +54,9 @@ async fn main() -> Result<()> {
         Commands::RecordWorker => {
             bendershot::video::ScreenRecorder::run_worker().await?;
         }
+        Commands::Settings => {
+            ui::run_settings_window().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        }
     }
 
     Ok(())
