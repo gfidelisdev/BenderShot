@@ -1,4 +1,4 @@
-# 🚀 Enhanced Shot
+# 🚀 BenderShot
 
 Uma ferramenta de captura de tela de altíssimo desempenho, anotação vetorial e fluxo de trabalho em estilo **KDE Spectacle** com design nativo **GNOME Libadwaita** para **Linux Wayland** (Fedora / GNOME), desenvolvida 100% em **Rust**.
 
@@ -43,7 +43,7 @@ Uma ferramenta de captura de tela de altíssimo desempenho, anotação vetorial 
 cargo build --release
 
 # Opcional: Instalar no sistema
-sudo cp target/release/enhanced-shot /usr/local/bin/
+sudo cp target/release/bendershot /usr/local/bin/
 ```
 
 ---
@@ -52,19 +52,19 @@ sudo cp target/release/enhanced-shot /usr/local/bin/
 
 ```bash
 # Captura direta (padrão)
-enhanced-shot
+bendershot
 
 # Captura de tela inteira
-enhanced-shot full
+bendershot full
 
 # Captura da janela ativa
-enhanced-shot window
+bendershot window
 
 # Iniciar o daemon com ícone no painel superior do GNOME
-enhanced-shot daemon
+bendershot daemon
 
 # Abrir uma imagem existente diretamente no editor
-enhanced-shot edit /caminho/para/imagem.png
+bendershot edit /caminho/para/imagem.png
 ```
 
 ---

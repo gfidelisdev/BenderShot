@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# enhanced-shot install.sh
+# bendershot install.sh
 # Universal Multi-Distro Interactive Installer & Shortcut Configurator
 # ==============================================================================
 set -euo pipefail
@@ -27,8 +27,8 @@ elif [ -f "${SCRIPT_DIR}/target/release/${APP_NAME}" ]; then
 elif command -v "${APP_NAME}" &>/dev/null; then
     SRC_BIN="$(command -v "${APP_NAME}")"
     SRC_ASSETS="${SCRIPT_DIR}/packaging/assets"
-elif [ -f "${SCRIPT_DIR}/enhanced-shot" ]; then
-    SRC_BIN="${SCRIPT_DIR}/enhanced-shot"
+elif [ -f "${SCRIPT_DIR}/bendershot" ]; then
+    SRC_BIN="${SCRIPT_DIR}/bendershot"
     SRC_ASSETS="${SCRIPT_DIR}/assets"
 else
     echo -e "${RED}Erro: Binário '${APP_NAME}' não encontrado!${RESET}"
@@ -72,17 +72,17 @@ install_files() {
         chmod 755 "${BIN_DIR}/${APP_NAME}"
         echo -e "  [✔] Binário: ${GREEN}${BIN_DIR}/${APP_NAME}${RESET}"
     fi
-    # Compatibility symlink for legacy enhanced-shot commands
-    ln -sf "${APP_NAME}" "${BIN_DIR}/enhanced-shot"
-    echo -e "  [✔] Alias de compatibilidade: ${GREEN}${BIN_DIR}/enhanced-shot -> ${APP_NAME}${RESET}"
+    # Compatibility symlink for legacy bendershot commands
+    ln -sf "${APP_NAME}" "${BIN_DIR}/bendershot"
+    echo -e "  [✔] Alias de compatibilidade: ${GREEN}${BIN_DIR}/bendershot -> ${APP_NAME}${RESET}"
 
     # 2. Desktop file
     if [ -f "${SRC_ASSETS}/bendershot.desktop" ]; then
         cp -f "${SRC_ASSETS}/bendershot.desktop" "${DESKTOP_DIR}/${APP_NAME}.desktop"
         chmod 644 "${DESKTOP_DIR}/${APP_NAME}.desktop"
         echo -e "  [✔] Lançador: ${GREEN}${DESKTOP_DIR}/${APP_NAME}.desktop${RESET}"
-    elif [ -f "${SRC_ASSETS}/enhanced-shot.desktop" ]; then
-        cp -f "${SRC_ASSETS}/enhanced-shot.desktop" "${DESKTOP_DIR}/${APP_NAME}.desktop"
+    elif [ -f "${SRC_ASSETS}/bendershot.desktop" ]; then
+        cp -f "${SRC_ASSETS}/bendershot.desktop" "${DESKTOP_DIR}/${APP_NAME}.desktop"
         chmod 644 "${DESKTOP_DIR}/${APP_NAME}.desktop"
         echo -e "  [✔] Lançador: ${GREEN}${DESKTOP_DIR}/${APP_NAME}.desktop${RESET}"
     fi
@@ -92,8 +92,8 @@ install_files() {
         cp -f "${SRC_ASSETS}/bendershot.svg" "${ICON_DIR}/${APP_NAME}.svg"
         chmod 644 "${ICON_DIR}/${APP_NAME}.svg"
         echo -e "  [✔] Ícone: ${GREEN}${ICON_DIR}/${APP_NAME}.svg${RESET}"
-    elif [ -f "${SRC_ASSETS}/enhanced-shot.svg" ]; then
-        cp -f "${SRC_ASSETS}/enhanced-shot.svg" "${ICON_DIR}/${APP_NAME}.svg"
+    elif [ -f "${SRC_ASSETS}/bendershot.svg" ]; then
+        cp -f "${SRC_ASSETS}/bendershot.svg" "${ICON_DIR}/${APP_NAME}.svg"
         chmod 644 "${ICON_DIR}/${APP_NAME}.svg"
         echo -e "  [✔] Ícone: ${GREEN}${ICON_DIR}/${APP_NAME}.svg${RESET}"
     fi
@@ -103,8 +103,8 @@ install_files() {
         cp -f "${SRC_ASSETS}/bendershot.service" "${SERVICE_DIR}/${APP_NAME}.service"
         chmod 644 "${SERVICE_DIR}/${APP_NAME}.service"
         echo -e "  [✔] Serviço Daemon: ${GREEN}${SERVICE_DIR}/${APP_NAME}.service${RESET}"
-    elif [ -f "${SRC_ASSETS}/enhanced-shot.service" ]; then
-        cp -f "${SRC_ASSETS}/enhanced-shot.service" "${SERVICE_DIR}/${APP_NAME}.service"
+    elif [ -f "${SRC_ASSETS}/bendershot.service" ]; then
+        cp -f "${SRC_ASSETS}/bendershot.service" "${SERVICE_DIR}/${APP_NAME}.service"
         chmod 644 "${SERVICE_DIR}/${APP_NAME}.service"
         echo -e "  [✔] Serviço Daemon: ${GREEN}${SERVICE_DIR}/${APP_NAME}.service${RESET}"
     fi
@@ -141,7 +141,7 @@ configure_gnome_shortcut() {
     echo -e "  [✔] Configurando atalho global GNOME: ${BOLD}${keybinding}${RESET} -> '${command_to_run}'"
 
     # Locate or create a custom shortcut slot
-    local custom_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/enhanced-shot/"
+    local custom_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot/"
     local current_bindings
     current_bindings="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "@as []")"
 
@@ -186,7 +186,7 @@ uninstall() {
 
     # Restore GNOME Print key if customized
     if command -v gsettings &>/dev/null; then
-        local custom_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/enhanced-shot/"
+        local custom_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot/"
         local current_bindings
         current_bindings="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")"
         if [[ "${current_bindings}" == *"${custom_path}"* ]]; then
