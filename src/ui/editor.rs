@@ -26,6 +26,13 @@ enum ArrowHandle {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BezierHandle {
+    Start,
+    Control,
+    End,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CropHandle {
     TopLeft,
     TopRight,
@@ -39,6 +46,8 @@ enum DragMode {
     None,
     TranslateItem,
     ResizeArrow { item_index: usize, handle: ArrowHandle },
+    ResizeBezier { item_index: usize, handle: BezierHandle },
+    MovePolygonVertex { item_index: usize, vertex_index: usize },
     AdjustCrop { handle: CropHandle },
 }
 
@@ -86,6 +95,12 @@ pub struct EditorApp {
     last_cached_idx: u64,
     status_message: Option<(String, std::time::Instant)>,
     pin_sender: Option<Sender<RgbaImage>>,
+    freehand_smoothing: bool,
+    freehand_smooth_intensity: u32,
+    polygon_sides: u32,
+    polygon_is_freeform: bool,
+    polygon_freeform_points: Vec<[f32; 2]>,
+    bezier_is_arrow: bool,
 }
 
 impl EditorApp {
@@ -128,6 +143,12 @@ impl EditorApp {
             last_cached_idx: 0,
             status_message: None,
             pin_sender,
+            freehand_smoothing: true,
+            freehand_smooth_intensity: 2,
+            polygon_sides: 4,
+            polygon_is_freeform: false,
+            polygon_freeform_points: Vec::new(),
+            bezier_is_arrow: false,
         }
     }
 
@@ -214,7 +235,7 @@ impl EditorApp {
             [x, y]
         };
 
-        if is_ctrl_constrained && matches!(self.current_tool, ToolMode::Rectangle | ToolMode::Ellipse | ToolMode::Crop) {
+        if is_ctrl_constrained && matches!(self.current_tool, ToolMode::Rectangle | ToolMode::Polygon | ToolMode::Ellipse | ToolMode::Crop) {
             let dx = end.x - start.x;
             let dy = end.y - start.y;
             let size = dx.abs().max(dy.abs());
@@ -237,17 +258,62 @@ impl EditorApp {
                     self.selected_item_index = Some(self.scene.items.len() - 1);
                 }
             }
-            ToolMode::Rectangle => {
+            ToolMode::Rectangle | ToolMode::Polygon => {
                 let min = [p1[0].min(p2[0]), p1[1].min(p2[1])];
                 let max = [p1[0].max(p2[0]), p1[1].max(p2[1])];
                 if (max[0] - min[0]) > 4.0 && (max[1] - min[1]) > 4.0 {
                     self.save_snapshot_for_undo();
-                    self.scene.push_item(AnnotationItem::Rectangle {
-                        min,
-                        max,
+                    if self.polygon_sides == 4 {
+                        self.scene.push_item(AnnotationItem::Rectangle {
+                            min,
+                            max,
+                            color: self.current_color,
+                            width: self.stroke_width,
+                            fill: None,
+                        });
+                    } else {
+                        let cx = (min[0] + max[0]) / 2.0;
+                        let cy = (min[1] + max[1]) / 2.0;
+                        let mut rx = (max[0] - min[0]) / 2.0;
+                        let mut ry = (max[1] - min[1]) / 2.0;
+                        if is_ctrl_constrained {
+                            let r = rx.min(ry).max(1.0);
+                            rx = r;
+                            ry = r;
+                        }
+                        let sides = self.polygon_sides.clamp(3, 16);
+                        let pts = (0..sides)
+                            .map(|i| {
+                                let theta = -std::f32::consts::FRAC_PI_2
+                                    + (i as f32 / sides as f32) * std::f32::consts::TAU;
+                                [cx + rx * theta.cos(), cy + ry * theta.sin()]
+                            })
+                            .collect();
+                        self.scene.push_item(AnnotationItem::Polygon {
+                            points: pts,
+                            sides,
+                            color: self.current_color,
+                            width: self.stroke_width,
+                            fill: None,
+                        });
+                    }
+                    self.selected_item_index = Some(self.scene.items.len() - 1);
+                }
+            }
+            ToolMode::Bezier => {
+                if (start - end).length() > 5.0 {
+                    self.save_snapshot_for_undo();
+                    let mid = [(p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0];
+                    let dx = p2[0] - p1[0];
+                    let dy = p2[1] - p1[1];
+                    let ctrl = [mid[0] - dy * 0.25, mid[1] + dx * 0.25];
+                    self.scene.push_item(AnnotationItem::Bezier {
+                        start: p1,
+                        control: ctrl,
+                        end: p2,
                         color: self.current_color,
                         width: self.stroke_width,
-                        fill: None,
+                        is_arrow: self.bezier_is_arrow,
                     });
                     self.selected_item_index = Some(self.scene.items.len() - 1);
                 }
@@ -354,6 +420,25 @@ impl EditorApp {
             }
         }
         false
+    }
+
+    fn commit_freeform_polygon(&mut self) {
+        if self.polygon_freeform_points.len() >= 3 {
+            self.save_snapshot_for_undo();
+            let pts = std::mem::take(&mut self.polygon_freeform_points);
+            let sides = pts.len() as u32;
+            self.scene.push_item(AnnotationItem::Polygon {
+                points: pts,
+                sides,
+                color: self.current_color,
+                width: self.stroke_width,
+                fill: None,
+            });
+            self.selected_item_index = Some(self.scene.items.len() - 1);
+            self.set_status(format!("Polígono de {} vértices adicionado", sides));
+        } else {
+            self.polygon_freeform_points.clear();
+        }
     }
 
     fn copy_crop_selection(&mut self) {
@@ -610,7 +695,7 @@ impl eframe::App for EditorApp {
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     // App Title
-                    ui.label(egui::RichText::new("📷 Enhanced Shot").strong().size(15.0));
+                    ui.label(egui::RichText::new("📷 BenderShot").strong().size(15.0));
                     ui.separator();
 
                     let next_badge = self.scene.next_badge_number;
@@ -626,11 +711,13 @@ impl eframe::App for EditorApp {
                         };
 
                         tool_btn(ToolMode::Select, "↖ Sel");
-                        tool_btn(ToolMode::Freehand, "✏ Desenho");
+                        tool_btn(ToolMode::Freehand, "✏ Caneta");
+                        tool_btn(ToolMode::FreehandHighlighter, "🖊 Grifador");
+                        tool_btn(ToolMode::Bezier, "➰ Bézier");
                         tool_btn(ToolMode::Arrow, "↗ Seta");
-                        tool_btn(ToolMode::Rectangle, "▢ Box");
+                        tool_btn(ToolMode::Polygon, "⬡ Polígono");
                         tool_btn(ToolMode::Ellipse, "◯ Elipse");
-                        tool_btn(ToolMode::Highlight, "🖊 Grifar");
+                        tool_btn(ToolMode::Highlight, "▭ Grifo Box");
                         tool_btn(ToolMode::Text, "T Texto");
                         tool_btn(ToolMode::StepBadge, &format!("① Passo ({})", next_badge));
                         tool_btn(ToolMode::Blur, "░ Blur");
@@ -639,6 +726,72 @@ impl eframe::App for EditorApp {
                         tool_btn(ToolMode::ColorErase, "🧹 Apagar Cor");
                         tool_btn(ToolMode::Crop, "⯏ Trecho");
                     });
+
+                    // Contextual buttons for Freehand and Highlighter smoothing
+                    if self.current_tool == ToolMode::Freehand || self.current_tool == ToolMode::FreehandHighlighter {
+                        ui.separator();
+                        ui.group(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                            let smooth_txt = if self.freehand_smoothing { "✨ Suavizado" } else { "✏ Bruto (Raw)" };
+                            if ui.button(smooth_txt).on_hover_text("Alternar entre traço bruto e curvas suavizadas").clicked() {
+                                self.freehand_smoothing = !self.freehand_smoothing;
+                            }
+                            if self.freehand_smoothing {
+                                ui.label("Intensidade:");
+                                ui.add(egui::Slider::new(&mut self.freehand_smooth_intensity, 1..=5));
+                            }
+                        });
+                    }
+
+                    // Contextual buttons for Polygon
+                    if self.current_tool == ToolMode::Polygon {
+                        ui.separator();
+                        ui.group(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                            let mode_txt = if self.polygon_is_freeform { "✏ Vértices Livres" } else { "⬡ Regular" };
+                            if ui.button(mode_txt).on_hover_text("Alternar entre polígono regular (N lados) e livre (clique ponto-a-ponto)").clicked() {
+                                self.polygon_is_freeform = !self.polygon_is_freeform;
+                                self.polygon_freeform_points.clear();
+                            }
+                            if !self.polygon_is_freeform {
+                                ui.label("Lados:");
+                                for s in [3, 4, 5, 6, 8] {
+                                    let lbl = match s {
+                                        3 => "3 (▲)",
+                                        4 => "4 (▢)",
+                                        5 => "5 (⬠)",
+                                        6 => "6 (⬡)",
+                                        8 => "8 (🛑)",
+                                        _ => "",
+                                    };
+                                    if ui.selectable_label(self.polygon_sides == s, lbl).clicked() {
+                                        self.polygon_sides = s;
+                                    }
+                                }
+                                ui.add(egui::DragValue::new(&mut self.polygon_sides).range(3..=16));
+                            } else if !self.polygon_freeform_points.is_empty() {
+                                ui.label(format!("Vértices: {}", self.polygon_freeform_points.len()));
+                                if ui.button("✔ Fechar").clicked() {
+                                    self.commit_freeform_polygon();
+                                }
+                                if ui.small_button("✕").clicked() {
+                                    self.polygon_freeform_points.clear();
+                                }
+                            }
+                        });
+                    }
+
+                    // Contextual buttons for Bezier
+                    if self.current_tool == ToolMode::Bezier {
+                        ui.separator();
+                        ui.group(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                            let kind_txt = if self.bezier_is_arrow { "↗ Seta Curva" } else { "➰ Linha Curva" };
+                            if ui.button(kind_txt).on_hover_text("Alternar entre curva simples e seta curva").clicked() {
+                                self.bezier_is_arrow = !self.bezier_is_arrow;
+                            }
+                        });
+                    }
 
                     // Contextual buttons when ColorErase tool is selected
                     if self.current_tool == ToolMode::ColorErase {
@@ -823,7 +976,7 @@ impl eframe::App for EditorApp {
                             if let Some(parent) = out_path.parent() {
                                 let _ = std::fs::create_dir_all(parent);
                             }
-                            match crate::video::VideoExporter::export_annotated_video(vid_path, &out_path, None) {
+                            match crate::video::VideoExporter::export_annotated_video(vid_path, &out_path, Some(&self.scene)) {
                                 Ok(()) => {
                                     self.set_status(format!("Vídeo exportado com sucesso: {:?}", out_path));
                                 }
@@ -1017,18 +1170,29 @@ impl eframe::App for EditorApp {
                                         self.last_playback_tick = Some(std::time::Instant::now());
                                         let idx = self.current_time_ms * PLAYBACK_FPS / 1000 + 1;
                                         if idx != self.last_cached_idx {
+                                            let mut loaded: Option<RgbaImage> = None;
                                             if let Some(ref dir) = self.frame_cache_dir {
                                                 let fp = dir.join(format!("f{:05}.jpg", idx));
                                                 if let Ok(img) = image::open(&fp) {
-                                                    self.base_image = img.to_rgba8();
-                                                    self.texture = None;
-                                                    self.last_cached_idx = idx;
+                                                    loaded = Some(img.to_rgba8());
                                                 }
                                             } else if let Some(ref path) = self.video_source_path {
                                                 if let Ok(frame) = crate::video::VideoExporter::extract_frame_at(path, self.current_time_ms) {
-                                                    self.base_image = frame;
+                                                    loaded = Some(frame);
+                                                }
+                                            }
+                                            if let Some(img) = loaded {
+                                                self.base_image = img;
+                                                self.last_cached_idx = idx;
+                                                let (w, h) = self.base_image.dimensions();
+                                                let ci = egui::ColorImage::from_rgba_unmultiplied(
+                                                    [w as usize, h as usize],
+                                                    self.base_image.as_raw(),
+                                                );
+                                                if let Some(tex) = self.texture.as_mut() {
+                                                    tex.set(ci, egui::TextureOptions::LINEAR);
+                                                } else {
                                                     self.texture = None;
-                                                    self.last_cached_idx = idx;
                                                 }
                                             }
                                         }
@@ -1069,6 +1233,21 @@ impl eframe::App for EditorApp {
                                     let mut e_val = span.end_ms;
                                     if ui.add(egui::DragValue::new(&mut e_val).range(span.start_ms..=self.video_duration_ms).suffix("ms")).changed() {
                                         span.end_ms = e_val;
+                                        self.scene.spans[idx] = Some(span);
+                                    }
+
+                                    ui.separator();
+                                    ui.label("✍ Entrada Orgânica:");
+                                    let mut dt = span.draw_transition_ms;
+                                    if ui.add(egui::DragValue::new(&mut dt).range(0..=3000).suffix("ms")).on_hover_text("Duração do traçado orgânico de entrada").changed() {
+                                        span.draw_transition_ms = dt;
+                                        self.scene.spans[idx] = Some(span);
+                                    }
+
+                                    ui.label("🌫 Desvanecer:");
+                                    let mut fo = span.fade_out_ms;
+                                    if ui.add(egui::DragValue::new(&mut fo).range(0..=2000).suffix("ms")).on_hover_text("Duração do desvanecimento de saída").changed() {
+                                        span.fade_out_ms = fo;
                                         self.scene.spans[idx] = Some(span);
                                     }
 
@@ -1173,36 +1352,150 @@ impl eframe::App for EditorApp {
                     continue;
                 }
 
+                let (progress, alpha_factor) = if self.video_source_path.is_some() {
+                    (
+                        self.scene.item_transition_progress(idx, self.current_time_ms),
+                        self.scene.item_alpha_factor(idx, self.current_time_ms),
+                    )
+                } else {
+                    (1.0, 1.0)
+                };
+
+                if progress <= 0.001 || alpha_factor <= 0.001 {
+                    continue;
+                }
+
                 let is_selected = self.selected_item_index == Some(idx);
 
                 match item {
-                    AnnotationItem::Freehand { points, color, width } => {
+                    AnnotationItem::Freehand { points, color, width, is_highlighter } => {
                         if points.len() >= 2 {
-                            let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
-                            let stroke = Stroke::new(to_screen_size(*width), col);
-                            let screen_points: Vec<Pos2> = points.iter().map(|p| to_screen(*p)).collect();
+                            let num_pts = ((points.len() as f32 * progress).ceil() as usize).max(2).min(points.len());
+                            let sub_points = &points[..num_pts];
+                            let base_alpha = if *is_highlighter { 100 } else { color[3] };
+                            let a = ((base_alpha as f32) * alpha_factor).round() as u8;
+                            let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
+                            let w = if *is_highlighter { (*width).max(18.0) } else { *width };
+                            let stroke = Stroke::new(to_screen_size(w), col);
+                            let screen_points: Vec<Pos2> = sub_points.iter().map(|p| to_screen(*p)).collect();
                             painter.add(egui::Shape::line(screen_points, stroke));
                         }
                     }
                     AnnotationItem::Arrow { start, end, color, width } => {
                         let p_start = to_screen(*start);
                         let p_end = to_screen(*end);
-                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                        let cur_end = Pos2::new(
+                            p_start.x + (p_end.x - p_start.x) * progress,
+                            p_start.y + (p_end.y - p_start.y) * progress,
+                        );
+                        let a = ((color[3] as f32) * alpha_factor).round() as u8;
+                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
                         let stroke = Stroke::new(to_screen_size(*width), col);
-                        painter.line_segment([p_start, p_end], stroke);
+                        painter.line_segment([p_start, cur_end], stroke);
 
-                        let dir = (p_end - p_start).normalized();
                         let head_len = to_screen_size(width * 4.0).max(12.0);
-                        let normal = Vec2::new(-dir.y, dir.x);
-                        let h1 = p_end - dir * head_len + normal * (head_len * 0.5);
-                        let h2 = p_end - dir * head_len - normal * (head_len * 0.5);
-                        painter.line_segment([p_end, h1], stroke);
-                        painter.line_segment([p_end, h2], stroke);
+                        let dist = (cur_end - p_start).length();
+                        // Arrowhead appears as soon as distinguishable from the shaft line (dist >= head_len * 0.4)
+                        if dist >= head_len * 0.4 {
+                            let dir = (p_end - p_start).normalized();
+                            let normal = Vec2::new(-dir.y, dir.x);
+                            let h1 = cur_end - dir * head_len + normal * (head_len * 0.5);
+                            let h2 = cur_end - dir * head_len - normal * (head_len * 0.5);
+                            painter.line_segment([cur_end, h1], stroke);
+                            painter.line_segment([cur_end, h2], stroke);
+                        }
+                    }
+                    AnnotationItem::Bezier { start, control, end, color, width, is_arrow } => {
+                        let p_start = to_screen(*start);
+                        let p_ctrl = to_screen(*control);
+                        let p_end = to_screen(*end);
+                        let a = ((color[3] as f32) * alpha_factor).round() as u8;
+                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
+                        let stroke = Stroke::new(to_screen_size(*width), col);
+
+                        let steps = 40;
+                        let max_step = ((steps as f32 * progress).ceil() as usize).max(2).min(steps);
+                        let pts: Vec<Pos2> = (0..=max_step).map(|i| {
+                            let t = (i as f32 / steps as f32).min(progress);
+                            let u = 1.0 - t;
+                            let x = u * u * p_start.x + 2.0 * u * t * p_ctrl.x + t * t * p_end.x;
+                            let y = u * u * p_start.y + 2.0 * u * t * p_ctrl.y + t * t * p_end.y;
+                            Pos2::new(x, y)
+                        }).collect();
+                        if pts.len() >= 2 {
+                            painter.add(egui::Shape::line(pts.clone(), stroke));
+                        }
+
+                        if *is_arrow && pts.len() >= 2 {
+                            let tip = *pts.last().unwrap();
+                            let prev = pts[pts.len() - 2];
+                            let dir = (tip - prev).normalized();
+                            let head_len = to_screen_size(width * 4.0).max(12.0);
+                            let dist = (tip - p_start).length();
+                            if dist >= head_len * 0.4 {
+                                let normal = Vec2::new(-dir.y, dir.x);
+                                let h1 = tip - dir * head_len + normal * (head_len * 0.5);
+                                let h2 = tip - dir * head_len - normal * (head_len * 0.5);
+                                painter.line_segment([tip, h1], stroke);
+                                painter.line_segment([tip, h2], stroke);
+                            }
+                        }
+                    }
+                    AnnotationItem::Polygon { points, color, width, .. } => {
+                        if points.len() >= 3 {
+                            let a = ((color[3] as f32) * alpha_factor).round() as u8;
+                            let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
+                            let stroke = Stroke::new(to_screen_size(*width), col);
+
+                            let mut loop_pts: Vec<Pos2> = points.iter().map(|p| to_screen(*p)).collect();
+                            loop_pts.push(loop_pts[0]);
+                            let total_segments = loop_pts.len() - 1;
+                            let progress_segments = (total_segments as f32 * progress).clamp(0.0, total_segments as f32);
+                            let full_segs = progress_segments.floor() as usize;
+                            let frac = progress_segments.fract();
+
+                            let mut drawn_pts: Vec<Pos2> = loop_pts[..=full_segs].to_vec();
+                            if frac > 0.001 && full_segs < total_segments {
+                                let p_a = loop_pts[full_segs];
+                                let p_b = loop_pts[full_segs + 1];
+                                drawn_pts.push(Pos2::new(p_a.x + (p_b.x - p_a.x) * frac, p_a.y + (p_b.y - p_a.y) * frac));
+                            }
+                            if drawn_pts.len() >= 2 {
+                                painter.add(egui::Shape::line(drawn_pts, stroke));
+                            }
+                        }
                     }
                     AnnotationItem::Rectangle { min, max, color, width, .. } => {
-                        let r = Rect::from_min_max(to_screen(*min), to_screen(*max));
-                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
-                        painter.rect_stroke(r, Rounding::same(3.0), Stroke::new(to_screen_size(*width), col));
+                        let p_min = to_screen(*min);
+                        let p_max = to_screen(*max);
+                        let a = ((color[3] as f32) * alpha_factor).round() as u8;
+                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
+                        let stroke = Stroke::new(to_screen_size(*width), col);
+
+                        if progress >= 0.999 {
+                            let r = Rect::from_min_max(p_min, p_max);
+                            painter.rect_stroke(r, Rounding::same(3.0), stroke);
+                        } else {
+                            let corners = [
+                                p_min,
+                                Pos2::new(p_max.x, p_min.y),
+                                p_max,
+                                Pos2::new(p_min.x, p_max.y),
+                                p_min,
+                            ];
+                            let progress_segs = 4.0 * progress;
+                            let full_segs = progress_segs.floor() as usize;
+                            let frac = progress_segs.fract();
+                            let mut drawn_pts: Vec<Pos2> = corners[..=full_segs].to_vec();
+                            if frac > 0.001 && full_segs < 4 {
+                                let p_a = corners[full_segs];
+                                let p_b = corners[full_segs + 1];
+                                drawn_pts.push(Pos2::new(p_a.x + (p_b.x - p_a.x) * frac, p_a.y + (p_b.y - p_a.y) * frac));
+                            }
+                            if drawn_pts.len() >= 2 {
+                                painter.add(egui::Shape::line(drawn_pts, stroke));
+                            }
+                        }
                     }
                     AnnotationItem::Ellipse { min, max, color, width, .. } => {
                         let p_min = to_screen(*min);
@@ -1211,41 +1504,52 @@ impl eframe::App for EditorApp {
                         let cy = (p_min.y + p_max.y) / 2.0;
                         let rx = ((p_max.x - p_min.x).abs() / 2.0).max(1.0);
                         let ry = ((p_max.y - p_min.y).abs() / 2.0).max(1.0);
-                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                        let a = ((color[3] as f32) * alpha_factor).round() as u8;
+                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
                         let stroke = Stroke::new(to_screen_size(*width), col);
 
-                        let points: Vec<Pos2> = (0..=48)
+                        let total_steps = 48;
+                        let current_steps = ((total_steps as f32 * progress).ceil() as usize).max(2).min(total_steps);
+                        let points: Vec<Pos2> = (0..=current_steps)
                             .map(|i| {
-                                let theta = (i as f32) * std::f32::consts::TAU / 48.0;
+                                let theta = -std::f32::consts::FRAC_PI_2 + (i as f32 / total_steps as f32) * std::f32::consts::TAU;
                                 Pos2::new(cx + rx * theta.cos(), cy + ry * theta.sin())
                             })
                             .collect();
-                        painter.add(egui::Shape::line(points, stroke));
+                        if points.len() >= 2 {
+                            painter.add(egui::Shape::line(points, stroke));
+                        }
                     }
                     AnnotationItem::Highlight { min, max, color } => {
                         let s_min = to_screen(*min);
                         let s_max = to_screen(*max);
-                        let rect = Rect::from_min_max(s_min, s_max);
-                        // Semi-transparent highlight fill (alpha 100/255 ~= 39%)
-                        let highlight_col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], 100);
+                        let cur_max_x = s_min.x + (s_max.x - s_min.x) * progress;
+                        let rect = Rect::from_min_max(s_min, Pos2::new(cur_max_x, s_max.y));
+                        let a = (100.0 * alpha_factor).round() as u8;
+                        let highlight_col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
                         painter.rect_filled(rect, Rounding::ZERO, highlight_col);
                     }
                     AnnotationItem::StepBadge { pos, number, color, radius } => {
                         let center = to_screen(*pos);
-                        let r = to_screen_size(*radius).max(10.0);
-                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                        let r = to_screen_size(*radius).max(10.0) * progress;
+                        let a = ((color[3] as f32) * alpha_factor).round() as u8;
+                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
+                        let text_a = (255.0 * alpha_factor).round() as u8;
                         painter.circle_filled(center, r, col);
-                        painter.text(
-                            center,
-                            egui::Align2::CENTER_CENTER,
-                            number.to_string(),
-                            egui::FontId::proportional(r * 1.2),
-                            Color32::WHITE,
-                        );
+                        if progress > 0.4 {
+                            painter.text(
+                                center,
+                                egui::Align2::CENTER_CENTER,
+                                number.to_string(),
+                                egui::FontId::proportional(r * 1.2),
+                                Color32::from_rgba_unmultiplied(255, 255, 255, text_a),
+                            );
+                        }
                     }
                     AnnotationItem::Text { pos, text, color, font_size, family, bg_style } => {
                         let p = to_screen(*pos);
-                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                        let a = ((color[3] as f32) * alpha_factor).round() as u8;
+                        let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a);
                         let rendered_size = (to_screen_size(*font_size)).max(18.0);
                         let font_id = match family {
                             FontFamily::Sans => egui::FontId::proportional(rendered_size),
@@ -1259,12 +1563,14 @@ impl eframe::App for EditorApp {
                                 Pos2::new(p.x - 6.0, p.y - 3.0),
                                 Vec2::new(text_len + 12.0, rendered_size + 6.0),
                             );
-                            painter.rect_filled(tag_rect, Rounding::same(4.0), Color32::from_black_alpha(200));
+                            let tag_a = (200.0 * alpha_factor).round() as u8;
+                            painter.rect_filled(tag_rect, Rounding::same(4.0), Color32::from_black_alpha(tag_a));
                         } else {
+                            let halo_a = (220.0 * alpha_factor).round() as u8;
                             let halo_color = if (col.r() as u32 + col.g() as u32 + col.b() as u32) > 380 {
-                                Color32::from_black_alpha(220)
+                                Color32::from_black_alpha(halo_a)
                             } else {
-                                Color32::from_white_alpha(220)
+                                Color32::from_white_alpha(halo_a)
                             };
 
                             for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5)] {
@@ -1282,8 +1588,8 @@ impl eframe::App for EditorApp {
                     AnnotationItem::Obfuscate { .. } => {}
                 }
 
-                // If layer is selected, draw selection indicators
-                if is_selected {
+                // If layer is selected, draw selection indicators (strictly hide during active video playback)
+                if is_selected && !self.is_playing {
                     match item {
                         AnnotationItem::Arrow { start, end, .. } => {
                             let p_start = to_screen(*start);
@@ -1292,13 +1598,65 @@ impl eframe::App for EditorApp {
                             let handle_fill = Color32::from_rgb(53, 132, 228);
                             let handle_stroke = Stroke::new(2.0_f32, Color32::WHITE);
 
-                            // Start point handle (circle with white border)
                             painter.circle_filled(p_start, handle_r, handle_fill);
                             painter.circle_stroke(p_start, handle_r, handle_stroke);
 
-                            // End point handle (circle with white border)
                             painter.circle_filled(p_end, handle_r, handle_fill);
                             painter.circle_stroke(p_end, handle_r, handle_stroke);
+                        }
+                        AnnotationItem::Bezier { start, control, end, .. } => {
+                            let p_start = to_screen(*start);
+                            let p_ctrl = to_screen(*control);
+                            let p_end = to_screen(*end);
+                            let handle_r = 7.0_f32;
+                            let handle_fill = Color32::from_rgb(53, 132, 228);
+                            let ctrl_fill = Color32::from_rgb(255, 120, 0);
+                            let handle_stroke = Stroke::new(2.0_f32, Color32::WHITE);
+
+                            // Tangent guide lines to control point
+                            painter.line_segment([p_start, p_ctrl], Stroke::new(1.0_f32, Color32::from_white_alpha(120)));
+                            painter.line_segment([p_ctrl, p_end], Stroke::new(1.0_f32, Color32::from_white_alpha(120)));
+
+                            painter.circle_filled(p_start, handle_r, handle_fill);
+                            painter.circle_stroke(p_start, handle_r, handle_stroke);
+
+                            painter.circle_filled(p_ctrl, handle_r, ctrl_fill);
+                            painter.circle_stroke(p_ctrl, handle_r, handle_stroke);
+
+                            painter.circle_filled(p_end, handle_r, handle_fill);
+                            painter.circle_stroke(p_end, handle_r, handle_stroke);
+                        }
+                        AnnotationItem::Polygon { points, .. } => {
+                            let handle_r = 6.0_f32;
+                            let handle_fill = Color32::from_rgb(53, 132, 228);
+                            let handle_stroke = Stroke::new(2.0_f32, Color32::WHITE);
+                            for pt in points {
+                                let s_pt = to_screen(*pt);
+                                painter.circle_filled(s_pt, handle_r, handle_fill);
+                                painter.circle_stroke(s_pt, handle_r, handle_stroke);
+                            }
+                        }
+                        AnnotationItem::Ellipse { min, max, .. } => {
+                            let p_min = to_screen(*min);
+                            let p_max = to_screen(*max);
+                            let cx = (p_min.x + p_max.x) / 2.0;
+                            let cy = (p_min.y + p_max.y) / 2.0;
+                            let rx = (p_max.x - p_min.x).abs() / 2.0;
+                            let ry = (p_max.y - p_min.y).abs() / 2.0;
+
+                            // Cardinal tangent handle dots (North, South, East, West) on perimeter - NO blue rectangle box!
+                            let handle_r = 5.0_f32;
+                            let handle_fill = Color32::from_rgb(53, 132, 228);
+                            let handle_stroke = Stroke::new(1.5_f32, Color32::WHITE);
+                            for pt in [
+                                Pos2::new(cx, cy - ry),
+                                Pos2::new(cx, cy + ry),
+                                Pos2::new(cx - rx, cy),
+                                Pos2::new(cx + rx, cy),
+                            ] {
+                                painter.circle_filled(pt, handle_r, handle_fill);
+                                painter.circle_stroke(pt, handle_r, handle_stroke);
+                            }
                         }
                         _ => {
                             let (b_min, b_max) = item.bounding_box();
@@ -1389,17 +1747,44 @@ impl eframe::App for EditorApp {
                                 pos: [img_x, img_y],
                                 text: String::new(),
                             });
+                        } else if self.current_tool == ToolMode::Polygon && self.polygon_is_freeform {
+                            self.polygon_freeform_points.push([img_x, img_y]);
+                            self.set_status(format!("Vértice {} adicionado (duplo clique para fechar)", self.polygon_freeform_points.len()));
                         } else if self.current_tool == ToolMode::Select {
-                            // First check if an arrow handle of the currently selected arrow was clicked
+                            // First check if a handle of the currently selected item was clicked
                             let mut clicked_handle = false;
                             if let Some(sel_idx) = self.selected_item_index {
-                                if let Some(AnnotationItem::Arrow { start, end, .. }) = self.scene.items.get(sel_idx) {
-                                    let p_start = to_screen(*start);
-                                    let p_end = to_screen(*end);
-                                    let handle_click_dist = 14.0_f32;
-                                    if click_pos.distance(p_start) <= handle_click_dist || click_pos.distance(p_end) <= handle_click_dist {
-                                        clicked_handle = true;
+                                match self.scene.items.get(sel_idx) {
+                                    Some(AnnotationItem::Arrow { start, end, .. }) => {
+                                        let p_start = to_screen(*start);
+                                        let p_end = to_screen(*end);
+                                        let handle_click_dist = 14.0_f32;
+                                        if click_pos.distance(p_start) <= handle_click_dist || click_pos.distance(p_end) <= handle_click_dist {
+                                            clicked_handle = true;
+                                        }
                                     }
+                                    Some(AnnotationItem::Bezier { start, control, end, .. }) => {
+                                        let p_start = to_screen(*start);
+                                        let p_ctrl = to_screen(*control);
+                                        let p_end = to_screen(*end);
+                                        let handle_click_dist = 14.0_f32;
+                                        if click_pos.distance(p_start) <= handle_click_dist
+                                            || click_pos.distance(p_ctrl) <= handle_click_dist
+                                            || click_pos.distance(p_end) <= handle_click_dist
+                                        {
+                                            clicked_handle = true;
+                                        }
+                                    }
+                                    Some(AnnotationItem::Polygon { points, .. }) => {
+                                        let handle_click_dist = 14.0_f32;
+                                        for pt in points {
+                                            if click_pos.distance(to_screen(*pt)) <= handle_click_dist {
+                                                clicked_handle = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
 
@@ -1420,6 +1805,10 @@ impl eframe::App for EditorApp {
                         }
                     }
                 }
+            }
+
+            if response.double_clicked() && self.current_tool == ToolMode::Polygon && self.polygon_is_freeform {
+                self.commit_freeform_polygon();
             }
 
             // 4. Render Active Inline Text Input directly on the Canvas
@@ -1467,7 +1856,7 @@ impl eframe::App for EditorApp {
                         if self.current_tool == ToolMode::Smudge {
                             self.save_snapshot_for_undo();
                             self.smudge_carried_color = None;
-                        } else if self.current_tool == ToolMode::Freehand {
+                        } else if self.current_tool == ToolMode::Freehand || self.current_tool == ToolMode::FreehandHighlighter {
                             self.save_snapshot_for_undo();
                             let img_pos = [
                                 ((pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w),
@@ -1495,24 +1884,46 @@ impl eframe::App for EditorApp {
                         } else if self.current_tool == ToolMode::Select {
                             let mut handle_drag = None;
                             if let Some(sel_idx) = self.selected_item_index {
-                                if let Some(AnnotationItem::Arrow { start, end, .. }) = self.scene.items.get(sel_idx) {
-                                    let p_start = to_screen(*start);
-                                    let p_end = to_screen(*end);
+                                if let Some(item) = self.scene.items.get(sel_idx) {
                                     let grab_dist = 14.0_f32;
-                                    if pos.distance(p_start) <= grab_dist {
-                                        handle_drag = Some((sel_idx, ArrowHandle::Start));
-                                    } else if pos.distance(p_end) <= grab_dist {
-                                        handle_drag = Some((sel_idx, ArrowHandle::End));
+                                    match item {
+                                        AnnotationItem::Arrow { start, end, .. } => {
+                                            let p_start = to_screen(*start);
+                                            let p_end = to_screen(*end);
+                                            if pos.distance(p_start) <= grab_dist {
+                                                handle_drag = Some(DragMode::ResizeArrow { item_index: sel_idx, handle: ArrowHandle::Start });
+                                            } else if pos.distance(p_end) <= grab_dist {
+                                                handle_drag = Some(DragMode::ResizeArrow { item_index: sel_idx, handle: ArrowHandle::End });
+                                            }
+                                        }
+                                        AnnotationItem::Bezier { start, control, end, .. } => {
+                                            let p_start = to_screen(*start);
+                                            let p_ctrl = to_screen(*control);
+                                            let p_end = to_screen(*end);
+                                            if pos.distance(p_start) <= grab_dist {
+                                                handle_drag = Some(DragMode::ResizeBezier { item_index: sel_idx, handle: BezierHandle::Start });
+                                            } else if pos.distance(p_ctrl) <= grab_dist {
+                                                handle_drag = Some(DragMode::ResizeBezier { item_index: sel_idx, handle: BezierHandle::Control });
+                                            } else if pos.distance(p_end) <= grab_dist {
+                                                handle_drag = Some(DragMode::ResizeBezier { item_index: sel_idx, handle: BezierHandle::End });
+                                            }
+                                        }
+                                        AnnotationItem::Polygon { points, .. } => {
+                                            for (v_idx, pt) in points.iter().enumerate() {
+                                                if pos.distance(to_screen(*pt)) <= grab_dist {
+                                                    handle_drag = Some(DragMode::MovePolygonVertex { item_index: sel_idx, vertex_index: v_idx });
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
 
-                            if let Some((idx, handle)) = handle_drag {
+                            if let Some(h) = handle_drag {
                                 self.save_snapshot_for_undo();
-                                self.drag_mode = DragMode::ResizeArrow {
-                                    item_index: idx,
-                                    handle,
-                                };
+                                self.drag_mode = h;
                             } else if self.selected_item_index.is_some() {
                                 self.save_snapshot_for_undo();
                                 self.drag_mode = DragMode::TranslateItem;
@@ -1542,7 +1953,7 @@ impl eframe::App for EditorApp {
                                 );
                                 self.texture = None;
                             }
-                        } else if self.current_tool == ToolMode::Freehand {
+                        } else if self.current_tool == ToolMode::Freehand || self.current_tool == ToolMode::FreehandHighlighter {
                             let img_pos = [
                                 ((pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w),
                                 ((pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h),
@@ -1604,6 +2015,30 @@ impl eframe::App for EditorApp {
                                         }
                                     }
                                 }
+                                DragMode::ResizeBezier { item_index, handle } => {
+                                    let img_pos = [
+                                        ((pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w),
+                                        ((pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h),
+                                    ];
+                                    if let Some(AnnotationItem::Bezier { start, control, end, .. }) = self.scene.items.get_mut(item_index) {
+                                        match handle {
+                                            BezierHandle::Start => *start = img_pos,
+                                            BezierHandle::Control => *control = img_pos,
+                                            BezierHandle::End => *end = img_pos,
+                                        }
+                                    }
+                                }
+                                DragMode::MovePolygonVertex { item_index, vertex_index } => {
+                                    let img_pos = [
+                                        ((pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w),
+                                        ((pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h),
+                                    ];
+                                    if let Some(AnnotationItem::Polygon { points, .. }) = self.scene.items.get_mut(item_index) {
+                                        if vertex_index < points.len() {
+                                            points[vertex_index] = img_pos;
+                                        }
+                                    }
+                                }
                                 DragMode::TranslateItem => {
                                     if let (Some(prev_pos), Some(sel_idx)) = (self.drag_current, self.selected_item_index) {
                                         if let Some(item) = self.scene.items.get_mut(sel_idx) {
@@ -1626,15 +2061,29 @@ impl eframe::App for EditorApp {
                         self.drag_current = None;
                         self.drag_mode = DragMode::None;
                         self.set_status("Smudge aplicado");
-                    } else if self.current_tool == ToolMode::Freehand {
+                    } else if self.current_tool == ToolMode::Freehand || self.current_tool == ToolMode::FreehandHighlighter {
                         if self.freehand_points.len() >= 2 {
+                            let is_highlighter = self.current_tool == ToolMode::FreehandHighlighter;
+                            let raw_pts = std::mem::take(&mut self.freehand_points);
+                            let smoothed_pts = if self.freehand_smoothing {
+                                crate::smooth::smooth_stroke(&raw_pts, self.freehand_smooth_intensity)
+                            } else {
+                                raw_pts
+                            };
+                            let width = if is_highlighter { self.stroke_width.max(18.0) } else { self.stroke_width };
+                            let col = if is_highlighter {
+                                [self.current_color[0], self.current_color[1], self.current_color[2], 100]
+                            } else {
+                                self.current_color
+                            };
                             self.scene.push_item(AnnotationItem::Freehand {
-                                points: std::mem::take(&mut self.freehand_points),
-                                color: self.current_color,
-                                width: self.stroke_width,
+                                points: smoothed_pts,
+                                color: col,
+                                width,
+                                is_highlighter,
                             });
                             self.selected_item_index = Some(self.scene.items.len() - 1);
-                            self.set_status("Desenho livre adicionado");
+                            self.set_status(if is_highlighter { "Grifo livre adicionado" } else { "Desenho livre adicionado" });
                         } else {
                             self.freehand_points.clear();
                         }
@@ -1674,7 +2123,7 @@ impl eframe::App for EditorApp {
 
             // Draw active preview while dragging shapes
             if let (Some(start), Some(mut curr)) = (self.drag_start, self.drag_current) {
-                if is_ctrl && matches!(self.current_tool, ToolMode::Rectangle | ToolMode::Ellipse | ToolMode::Crop) {
+                if is_ctrl && matches!(self.current_tool, ToolMode::Rectangle | ToolMode::Polygon | ToolMode::Ellipse | ToolMode::Crop) {
                     let dx = curr.x - start.x;
                     let dy = curr.y - start.y;
                     let size = dx.abs().max(dy.abs());
@@ -1689,6 +2138,14 @@ impl eframe::App for EditorApp {
                             painter.add(egui::Shape::line(screen_points, stroke));
                         }
                     }
+                    ToolMode::FreehandHighlighter => {
+                        if self.freehand_points.len() >= 2 {
+                            let screen_points: Vec<Pos2> = self.freehand_points.iter().map(|p| to_screen(*p)).collect();
+                            let hl_col = Color32::from_rgba_unmultiplied(self.current_color[0], self.current_color[1], self.current_color[2], 100);
+                            let hl_stroke = Stroke::new(to_screen_size(self.stroke_width.max(18.0)), hl_col);
+                            painter.add(egui::Shape::line(screen_points, hl_stroke));
+                        }
+                    }
                     ToolMode::Arrow => {
                         painter.line_segment([start, curr], stroke);
                         let dir = (curr - start).normalized();
@@ -1701,9 +2158,49 @@ impl eframe::App for EditorApp {
                             painter.line_segment([curr, h2], stroke);
                         }
                     }
+                    ToolMode::Bezier => {
+                        painter.line_segment([start, curr], stroke);
+                        let mid = Pos2::new((start.x + curr.x) / 2.0, (start.y + curr.y) / 2.0);
+                        let dx = curr.x - start.x;
+                        let dy = curr.y - start.y;
+                        let ctrl = Pos2::new(mid.x - dy * 0.25, mid.y + dx * 0.25);
+                        let pts: Vec<Pos2> = (0..=30).map(|i| {
+                            let t = i as f32 / 30.0;
+                            let u = 1.0 - t;
+                            let x = u * u * start.x + 2.0 * u * t * ctrl.x + t * t * curr.x;
+                            let y = u * u * start.y + 2.0 * u * t * ctrl.y + t * t * curr.y;
+                            Pos2::new(x, y)
+                        }).collect();
+                        painter.add(egui::Shape::line(pts, stroke));
+                    }
                     ToolMode::Rectangle | ToolMode::Crop => {
                         let r = Rect::from_two_pos(start, curr);
                         painter.rect_stroke(r, Rounding::same(3.0), stroke);
+                    }
+                    ToolMode::Polygon => {
+                        if self.polygon_sides == 4 {
+                            let r = Rect::from_two_pos(start, curr);
+                            painter.rect_stroke(r, Rounding::same(3.0), stroke);
+                        } else {
+                            let cx = (start.x + curr.x) / 2.0;
+                            let cy = (start.y + curr.y) / 2.0;
+                            let mut rx = ((curr.x - start.x).abs() / 2.0).max(1.0);
+                            let mut ry = ((curr.y - start.y).abs() / 2.0).max(1.0);
+                            if is_ctrl {
+                                let r = rx.min(ry);
+                                rx = r;
+                                ry = r;
+                            }
+                            let sides = self.polygon_sides.clamp(3, 16);
+                            let mut pts: Vec<Pos2> = (0..sides)
+                                .map(|i| {
+                                    let theta = -std::f32::consts::FRAC_PI_2 + (i as f32 / sides as f32) * std::f32::consts::TAU;
+                                    Pos2::new(cx + rx * theta.cos(), cy + ry * theta.sin())
+                                })
+                                .collect();
+                            pts.push(pts[0]);
+                            painter.add(egui::Shape::line(pts, stroke));
+                        }
                     }
                     ToolMode::Highlight => {
                         let r = Rect::from_two_pos(start, curr);
@@ -1739,6 +2236,19 @@ impl eframe::App for EditorApp {
                         painter.circle_stroke(curr, brush_radius_screen, Stroke::new(1.5_f32, Color32::from_white_alpha(200)));
                     }
                     _ => {}
+                }
+            }
+
+            // Draw active freeform polygon vertices and lines
+            if self.current_tool == ToolMode::Polygon && self.polygon_is_freeform && !self.polygon_freeform_points.is_empty() {
+                let screen_pts: Vec<Pos2> = self.polygon_freeform_points.iter().map(|p| to_screen(*p)).collect();
+                let preview_stroke = Stroke::new(to_screen_size(self.stroke_width), self.color32());
+                if screen_pts.len() >= 2 {
+                    painter.add(egui::Shape::line(screen_pts.clone(), preview_stroke));
+                }
+                for pt in screen_pts {
+                    painter.circle_filled(pt, 4.0, Color32::from_rgb(53, 132, 228));
+                    painter.circle_stroke(pt, 4.0, Stroke::new(1.5_f32, Color32::WHITE));
                 }
             }
 
@@ -1957,14 +2467,14 @@ pub fn run_editor(image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Re
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Enhanced Shot")
+            .with_title("BenderShot")
             .with_inner_size([width, height])
             .with_min_inner_size([700.0, 480.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Enhanced Shot",
+        "BenderShot",
         options,
         Box::new(|_cc| Ok(Box::new(EditorApp::new(image, pin_sender)))),
     )
@@ -1980,14 +2490,14 @@ pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Er
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Enhanced Shot - Editor de Vídeo")
+            .with_title("BenderShot - Editor de Vídeo")
             .with_inner_size([width, height])
             .with_min_inner_size([750.0, 520.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Enhanced Shot - Editor de Vídeo",
+        "BenderShot - Editor de Vídeo",
         options,
         Box::new(move |_cc| {
             let mut app = EditorApp::new(initial_frame, None);
@@ -1995,11 +2505,11 @@ pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Er
             app.video_duration_ms = duration_ms;
             app.current_time_ms = 0;
             // Pre-extract frames in background (ffmpeg runs once) so playback doesn't spawn ffmpeg per frame
-            let dir = std::path::PathBuf::from(format!("/tmp/enhanced-shot-frames-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("bendershot-frames-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             if std::fs::create_dir_all(&dir).is_ok() {
                 let pattern = dir.join("f%05d.jpg");
-                let spawned = std::process::Command::new("ffmpeg")
+                let spawned = std::process::Command::new(crate::video::ScreenRecorder::ffmpeg_bin())
                     .args([
                         "-y", "-loglevel", "error",
                         "-i", app.video_source_path.as_ref().and_then(|p| p.to_str()).unwrap_or_default(),

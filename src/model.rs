@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 pub enum ToolMode {
     Select,
     Freehand,
+    FreehandHighlighter,
+    Bezier,
     Arrow,
     Rectangle,
+    Polygon,
     Ellipse,
     Highlight,
     Text,
@@ -36,19 +39,84 @@ pub enum TextBackground {
     FilledTag,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AnnotationSpan {
     pub start_ms: u64,
     pub end_ms: u64,
+    #[serde(default = "default_draw_transition_ms")]
+    pub draw_transition_ms: u32,
+    #[serde(default = "default_fade_out_ms")]
+    pub fade_out_ms: u32,
+}
+
+fn default_draw_transition_ms() -> u32 {
+    500
+}
+
+fn default_fade_out_ms() -> u32 {
+    200
 }
 
 impl AnnotationSpan {
     pub fn new(start_ms: u64, end_ms: u64) -> Self {
-        Self { start_ms, end_ms }
+        Self {
+            start_ms,
+            end_ms,
+            draw_transition_ms: 500,
+            fade_out_ms: 200,
+        }
+    }
+
+    pub fn with_transitions(
+        start_ms: u64,
+        end_ms: u64,
+        draw_transition_ms: u32,
+        fade_out_ms: u32,
+    ) -> Self {
+        Self {
+            start_ms,
+            end_ms,
+            draw_transition_ms,
+            fade_out_ms,
+        }
+    }
+
+    pub fn with_draw_transition(mut self, draw_transition_ms: u32) -> Self {
+        self.draw_transition_ms = draw_transition_ms;
+        self
+    }
+
+    pub fn with_fade_out(mut self, fade_out_ms: u32) -> Self {
+        self.fade_out_ms = fade_out_ms;
+        self
     }
 
     pub fn is_active_at(&self, time_ms: u64) -> bool {
         time_ms >= self.start_ms && time_ms <= self.end_ms
+    }
+
+    pub fn progress_at(&self, time_ms: u64) -> f32 {
+        if time_ms < self.start_ms {
+            0.0
+        } else if self.draw_transition_ms == 0
+            || time_ms >= self.start_ms + self.draw_transition_ms as u64
+        {
+            1.0
+        } else {
+            ((time_ms - self.start_ms) as f32 / self.draw_transition_ms as f32).clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn alpha_factor_at(&self, time_ms: u64) -> f32 {
+        if !self.is_active_at(time_ms) {
+            0.0
+        } else if self.fade_out_ms > 0
+            && time_ms > self.end_ms.saturating_sub(self.fade_out_ms as u64)
+        {
+            ((self.end_ms - time_ms) as f32 / self.fade_out_ms as f32).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
     }
 }
 
@@ -64,6 +132,16 @@ pub enum AnnotationItem {
         points: Vec<[f32; 2]>,
         color: [u8; 4],
         width: f32,
+        #[serde(default)]
+        is_highlighter: bool,
+    },
+    Bezier {
+        start: [f32; 2],
+        control: [f32; 2],
+        end: [f32; 2],
+        color: [u8; 4],
+        width: f32,
+        is_arrow: bool,
     },
     Arrow {
         start: [f32; 2],
@@ -74,6 +152,13 @@ pub enum AnnotationItem {
     Rectangle {
         min: [f32; 2],
         max: [f32; 2],
+        color: [u8; 4],
+        width: f32,
+        fill: Option<[u8; 4]>,
+    },
+    Polygon {
+        points: Vec<[f32; 2]>,
+        sides: u32,
         color: [u8; 4],
         width: f32,
         fill: Option<[u8; 4]>,
@@ -115,9 +200,30 @@ pub enum AnnotationItem {
 impl AnnotationItem {
     pub fn layer_name(&self) -> String {
         match self {
-            AnnotationItem::Freehand { .. } => "✏ Desenho Livre".into(),
+            AnnotationItem::Freehand { is_highlighter, .. } => {
+                if *is_highlighter {
+                    "🖊 Grifador Livre".into()
+                } else {
+                    "✏ Caneta Livre".into()
+                }
+            }
+            AnnotationItem::Bezier { is_arrow, .. } => {
+                if *is_arrow {
+                    "↗ Seta Curva (Bézier)".into()
+                } else {
+                    "➰ Curva Bézier".into()
+                }
+            }
             AnnotationItem::Arrow { .. } => "↗ Seta".into(),
             AnnotationItem::Rectangle { .. } => "▢ Retângulo".into(),
+            AnnotationItem::Polygon { sides, .. } => match sides {
+                3 => "▲ Triângulo".into(),
+                4 => "▢ Polígono (4 lados)".into(),
+                5 => "⬠ Pentágono".into(),
+                6 => "⬡ Hexágono".into(),
+                8 => "🛑 Octógono".into(),
+                _ => format!("⬡ Polígono ({} lados)", sides),
+            },
             AnnotationItem::Ellipse { .. } => "◯ Elipse".into(),
             AnnotationItem::Highlight { .. } => "🖊 Grifar".into(),
             AnnotationItem::Text { text, .. } => {
@@ -139,8 +245,10 @@ impl AnnotationItem {
     pub fn color(&self) -> [u8; 4] {
         match self {
             AnnotationItem::Freehand { color, .. }
+            | AnnotationItem::Bezier { color, .. }
             | AnnotationItem::Arrow { color, .. }
             | AnnotationItem::Rectangle { color, .. }
+            | AnnotationItem::Polygon { color, .. }
             | AnnotationItem::Ellipse { color, .. }
             | AnnotationItem::Highlight { color, .. }
             | AnnotationItem::Text { color, .. }
@@ -152,8 +260,10 @@ impl AnnotationItem {
     pub fn set_color(&mut self, new_color: [u8; 4]) {
         match self {
             AnnotationItem::Freehand { color, .. }
+            | AnnotationItem::Bezier { color, .. }
             | AnnotationItem::Arrow { color, .. }
             | AnnotationItem::Rectangle { color, .. }
+            | AnnotationItem::Polygon { color, .. }
             | AnnotationItem::Ellipse { color, .. }
             | AnnotationItem::Highlight { color, .. }
             | AnnotationItem::Text { color, .. }
@@ -165,8 +275,10 @@ impl AnnotationItem {
     pub fn set_width(&mut self, new_width: f32) {
         match self {
             AnnotationItem::Freehand { width, .. }
+            | AnnotationItem::Bezier { width, .. }
             | AnnotationItem::Arrow { width, .. }
             | AnnotationItem::Rectangle { width, .. }
+            | AnnotationItem::Polygon { width, .. }
             | AnnotationItem::Ellipse { width, .. } => *width = new_width,
             AnnotationItem::Highlight { .. } => {}
             AnnotationItem::Text { font_size, .. } => *font_size = (new_width * 6.0).max(18.0),
@@ -178,6 +290,30 @@ impl AnnotationItem {
     pub fn bounding_box(&self) -> ([f32; 2], [f32; 2]) {
         match self {
             AnnotationItem::Freehand { points, .. } => {
+                if points.is_empty() {
+                    ([0.0, 0.0], [0.0, 0.0])
+                } else {
+                    let mut min_x = f32::MAX;
+                    let mut min_y = f32::MAX;
+                    let mut max_x = f32::MIN;
+                    let mut max_y = f32::MIN;
+                    for p in points {
+                        min_x = min_x.min(p[0]);
+                        min_y = min_y.min(p[1]);
+                        max_x = max_x.max(p[0]);
+                        max_y = max_y.max(p[1]);
+                    }
+                    ([min_x, min_y], [max_x, max_y])
+                }
+            }
+            AnnotationItem::Bezier { start, control, end, .. } => {
+                let min_x = start[0].min(control[0]).min(end[0]);
+                let min_y = start[1].min(control[1]).min(end[1]);
+                let max_x = start[0].max(control[0]).max(end[0]);
+                let max_y = start[1].max(control[1]).max(end[1]);
+                ([min_x, min_y], [max_x, max_y])
+            }
+            AnnotationItem::Polygon { points, .. } => {
                 if points.is_empty() {
                     ([0.0, 0.0], [0.0, 0.0])
                 } else {
@@ -226,6 +362,20 @@ impl AnnotationItem {
     pub fn translate(&mut self, delta: [f32; 2]) {
         match self {
             AnnotationItem::Freehand { points, .. } => {
+                for p in points {
+                    p[0] += delta[0];
+                    p[1] += delta[1];
+                }
+            }
+            AnnotationItem::Bezier { start, control, end, .. } => {
+                start[0] += delta[0];
+                start[1] += delta[1];
+                control[0] += delta[0];
+                control[1] += delta[1];
+                end[0] += delta[0];
+                end[1] += delta[1];
+            }
+            AnnotationItem::Polygon { points, .. } => {
                 for p in points {
                     p[0] += delta[0];
                     p[1] += delta[1];
@@ -323,6 +473,20 @@ impl Scene {
         match self.spans.get(idx).and_then(|s| *s) {
             Some(span) => span.is_active_at(time_ms),
             None => true,
+        }
+    }
+
+    pub fn item_transition_progress(&self, idx: usize, time_ms: u64) -> f32 {
+        match self.spans.get(idx).and_then(|s| *s) {
+            Some(span) => span.progress_at(time_ms),
+            None => 1.0,
+        }
+    }
+
+    pub fn item_alpha_factor(&self, idx: usize, time_ms: u64) -> f32 {
+        match self.spans.get(idx).and_then(|s| *s) {
+            Some(span) => span.alpha_factor_at(time_ms),
+            None => 1.0,
         }
     }
 }

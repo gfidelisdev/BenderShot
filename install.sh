@@ -13,8 +13,8 @@ YELLOW="\033[33m"
 RED="\033[31m"
 RESET="\033[0m"
 
-APP_NAME="enhanced-shot"
-APP_DISPLAY_NAME="Enhanced Shot"
+APP_NAME="bendershot"
+APP_DISPLAY_NAME="BenderShot"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Determine Binary & Asset paths (works whether run from repo or extracted tarball)
@@ -27,6 +27,9 @@ elif [ -f "${SCRIPT_DIR}/target/release/${APP_NAME}" ]; then
 elif command -v "${APP_NAME}" &>/dev/null; then
     SRC_BIN="$(command -v "${APP_NAME}")"
     SRC_ASSETS="${SCRIPT_DIR}/packaging/assets"
+elif [ -f "${SCRIPT_DIR}/enhanced-shot" ]; then
+    SRC_BIN="${SCRIPT_DIR}/enhanced-shot"
+    SRC_ASSETS="${SCRIPT_DIR}/assets"
 else
     echo -e "${RED}Erro: Binário '${APP_NAME}' não encontrado!${RESET}"
     echo "Execute a compilação primeiro ('cargo build --release') ou use o tarball de distribuição."
@@ -69,23 +72,38 @@ install_files() {
         chmod 755 "${BIN_DIR}/${APP_NAME}"
         echo -e "  [✔] Binário: ${GREEN}${BIN_DIR}/${APP_NAME}${RESET}"
     fi
+    # Compatibility symlink for legacy enhanced-shot commands
+    ln -sf "${APP_NAME}" "${BIN_DIR}/enhanced-shot"
+    echo -e "  [✔] Alias de compatibilidade: ${GREEN}${BIN_DIR}/enhanced-shot -> ${APP_NAME}${RESET}"
 
     # 2. Desktop file
-    if [ -f "${SRC_ASSETS}/enhanced-shot.desktop" ]; then
+    if [ -f "${SRC_ASSETS}/bendershot.desktop" ]; then
+        cp -f "${SRC_ASSETS}/bendershot.desktop" "${DESKTOP_DIR}/${APP_NAME}.desktop"
+        chmod 644 "${DESKTOP_DIR}/${APP_NAME}.desktop"
+        echo -e "  [✔] Lançador: ${GREEN}${DESKTOP_DIR}/${APP_NAME}.desktop${RESET}"
+    elif [ -f "${SRC_ASSETS}/enhanced-shot.desktop" ]; then
         cp -f "${SRC_ASSETS}/enhanced-shot.desktop" "${DESKTOP_DIR}/${APP_NAME}.desktop"
         chmod 644 "${DESKTOP_DIR}/${APP_NAME}.desktop"
         echo -e "  [✔] Lançador: ${GREEN}${DESKTOP_DIR}/${APP_NAME}.desktop${RESET}"
     fi
 
     # 3. Icon
-    if [ -f "${SRC_ASSETS}/enhanced-shot.svg" ]; then
+    if [ -f "${SRC_ASSETS}/bendershot.svg" ]; then
+        cp -f "${SRC_ASSETS}/bendershot.svg" "${ICON_DIR}/${APP_NAME}.svg"
+        chmod 644 "${ICON_DIR}/${APP_NAME}.svg"
+        echo -e "  [✔] Ícone: ${GREEN}${ICON_DIR}/${APP_NAME}.svg${RESET}"
+    elif [ -f "${SRC_ASSETS}/enhanced-shot.svg" ]; then
         cp -f "${SRC_ASSETS}/enhanced-shot.svg" "${ICON_DIR}/${APP_NAME}.svg"
         chmod 644 "${ICON_DIR}/${APP_NAME}.svg"
         echo -e "  [✔] Ícone: ${GREEN}${ICON_DIR}/${APP_NAME}.svg${RESET}"
     fi
 
     # 4. Systemd unit
-    if [ -f "${SRC_ASSETS}/enhanced-shot.service" ]; then
+    if [ -f "${SRC_ASSETS}/bendershot.service" ]; then
+        cp -f "${SRC_ASSETS}/bendershot.service" "${SERVICE_DIR}/${APP_NAME}.service"
+        chmod 644 "${SERVICE_DIR}/${APP_NAME}.service"
+        echo -e "  [✔] Serviço Daemon: ${GREEN}${SERVICE_DIR}/${APP_NAME}.service${RESET}"
+    elif [ -f "${SRC_ASSETS}/enhanced-shot.service" ]; then
         cp -f "${SRC_ASSETS}/enhanced-shot.service" "${SERVICE_DIR}/${APP_NAME}.service"
         chmod 644 "${SERVICE_DIR}/${APP_NAME}.service"
         echo -e "  [✔] Serviço Daemon: ${GREEN}${SERVICE_DIR}/${APP_NAME}.service${RESET}"

@@ -27,6 +27,8 @@ fn get_font(family: FontFamily) -> Option<&'static FontArc> {
                     "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
                     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
                     "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+                    "C:\\Windows\\Fonts\\segoeui.ttf",
+                    "C:\\Windows\\Fonts\\arial.ttf",
                 ];
                 load_first_available(&candidates)
             })
@@ -37,6 +39,8 @@ fn get_font(family: FontFamily) -> Option<&'static FontArc> {
                     "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
                     "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
                     "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+                    "C:\\Windows\\Fonts\\consola.ttf",
+                    "C:\\Windows\\Fonts\\cour.ttf",
                 ];
                 load_first_available(&candidates).or_else(|| get_font(FontFamily::Sans).cloned())
             })
@@ -47,6 +51,8 @@ fn get_font(family: FontFamily) -> Option<&'static FontArc> {
                     "/usr/share/fonts/google-noto/NotoSerif-Regular.ttf",
                     "/usr/share/fonts/dejavu/DejaVuSerif.ttf",
                     "/usr/share/fonts/liberation-serif/LiberationSerif-Regular.ttf",
+                    "C:\\Windows\\Fonts\\times.ttf",
+                    "C:\\Windows\\Fonts\\georgia.ttf",
                 ];
                 load_first_available(&candidates).or_else(|| get_font(FontFamily::Sans).cloned())
             })
@@ -55,45 +61,118 @@ fn get_font(family: FontFamily) -> Option<&'static FontArc> {
 }
 
 pub fn rasterize_scene(base: &RgbaImage, scene: &Scene) -> RgbaImage {
+    rasterize_scene_at_time(base, scene, u64::MAX)
+}
+
+pub fn rasterize_scene_at_time(base: &RgbaImage, scene: &Scene, time_ms: u64) -> RgbaImage {
     let mut canvas = base.clone();
 
     // 1. Process obfuscation layers first (blur/pixelate) directly on pixels
-    for item in &scene.items {
+    for (idx, item) in scene.items.iter().enumerate() {
+        if time_ms != u64::MAX && !scene.is_item_active_at(idx, time_ms) {
+            continue;
+        }
         if let AnnotationItem::Obfuscate { min, max, kind, strength } = item {
             apply_obfuscation(&mut canvas, *min, *max, *kind, *strength);
         }
     }
 
     // 2. Render vector annotations over the canvas
-    for item in &scene.items {
-        match item {
-            AnnotationItem::Freehand { points, color, width } => {
-                draw_freehand(&mut canvas, points, *color, *width);
-            }
-            AnnotationItem::Arrow { start, end, color, width } => {
-                draw_arrow(&mut canvas, *start, *end, *color, *width);
-            }
-            AnnotationItem::Rectangle { min, max, color, width, fill } => {
-                draw_rectangle(&mut canvas, *min, *max, *color, *width, *fill);
-            }
-            AnnotationItem::Ellipse { min, max, color, width, fill } => {
-                draw_ellipse(&mut canvas, *min, *max, *color, *width, *fill);
-            }
-            AnnotationItem::Highlight { min, max, color } => {
-                draw_highlight(&mut canvas, *min, *max, *color);
-            }
-            AnnotationItem::StepBadge { pos, number, color, radius } => {
-                draw_step_badge(&mut canvas, *pos, *number, *color, *radius);
-            }
-            AnnotationItem::Text { pos, text, color, font_size, family, bg_style } => {
-                draw_rendered_text(&mut canvas, *pos, text, *color, *font_size, *family, *bg_style);
-            }
-            AnnotationItem::Obfuscate { .. } => {}
+    for (idx, item) in scene.items.iter().enumerate() {
+        if time_ms != u64::MAX && !scene.is_item_active_at(idx, time_ms) {
+            continue;
         }
+        let progress = if time_ms == u64::MAX {
+            1.0
+        } else {
+            scene.item_transition_progress(idx, time_ms)
+        };
+        let alpha = if time_ms == u64::MAX {
+            1.0
+        } else {
+            scene.item_alpha_factor(idx, time_ms)
+        };
+
+        draw_item_with_progress(&mut canvas, item, progress, alpha);
     }
 
-
     canvas
+}
+
+fn draw_item_with_progress(canvas: &mut RgbaImage, item: &AnnotationItem, progress: f32, alpha: f32) {
+    if progress <= 0.0 || alpha <= 0.0 {
+        return;
+    }
+
+    match item {
+        AnnotationItem::Freehand { points, color, width, is_highlighter } => {
+            let mut col = *color;
+            if *is_highlighter {
+                col[3] = ((col[3] as f32 * 0.38) * alpha).clamp(20.0, 100.0) as u8;
+            } else {
+                col[3] = (col[3] as f32 * alpha).round() as u8;
+            }
+            if points.len() >= 2 {
+                let count = ((points.len() as f32 * progress).ceil() as usize).max(2).min(points.len());
+                draw_freehand(canvas, &points[..count], col, *width);
+            } else if !points.is_empty() {
+                draw_freehand(canvas, points, col, *width);
+            }
+        }
+        AnnotationItem::Bezier { start, control, end, color, width, is_arrow } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha).round() as u8;
+            draw_bezier(canvas, *start, *control, *end, col, *width, *is_arrow, progress);
+        }
+        AnnotationItem::Arrow { start, end, color, width } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha).round() as u8;
+            draw_arrow_progress(canvas, *start, *end, col, *width, progress);
+        }
+        AnnotationItem::Rectangle { min, max, color, width, fill } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha).round() as u8;
+            let fill_adj = fill.map(|mut f| {
+                f[3] = (f[3] as f32 * alpha * progress).round() as u8;
+                f
+            });
+            draw_rectangle_progress(canvas, *min, *max, col, *width, fill_adj, progress);
+        }
+        AnnotationItem::Polygon { points, color, width, fill, .. } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha).round() as u8;
+            let fill_adj = fill.map(|mut f| {
+                f[3] = (f[3] as f32 * alpha * progress).round() as u8;
+                f
+            });
+            draw_polygon(canvas, points, col, *width, fill_adj, progress);
+        }
+        AnnotationItem::Ellipse { min, max, color, width, fill } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha).round() as u8;
+            let fill_adj = fill.map(|mut f| {
+                f[3] = (f[3] as f32 * alpha * progress).round() as u8;
+                f
+            });
+            draw_ellipse_progress(canvas, *min, *max, col, *width, fill_adj, progress);
+        }
+        AnnotationItem::Highlight { min, max, color } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha).round() as u8;
+            draw_highlight(canvas, *min, *max, col);
+        }
+        AnnotationItem::StepBadge { pos, number, color, radius } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha * progress).round() as u8;
+            draw_step_badge(canvas, *pos, *number, col, *radius);
+        }
+        AnnotationItem::Text { pos, text, color, font_size, family, bg_style } => {
+            let mut col = *color;
+            col[3] = (col[3] as f32 * alpha * progress).round() as u8;
+            draw_rendered_text(canvas, *pos, text, col, *font_size, *family, *bg_style);
+        }
+        AnnotationItem::Obfuscate { .. } => {}
+    }
 }
 
 pub fn apply_obfuscation(
@@ -313,32 +392,138 @@ pub fn apply_color_erase(
     }
 }
 
+#[allow(dead_code)]
 fn draw_arrow(img: &mut RgbaImage, start: [f32; 2], end: [f32; 2], color: [u8; 4], width: f32) {
-    let col = Rgba(color);
-    draw_line_thick(img, start, end, col, width);
+    draw_arrow_progress(img, start, end, color, width, 1.0);
+}
 
+fn draw_arrow_progress(
+    img: &mut RgbaImage,
+    start: [f32; 2],
+    end: [f32; 2],
+    color: [u8; 4],
+    width: f32,
+    progress: f32,
+) {
+    let col = Rgba(color);
     let dx = end[0] - start[0];
     let dy = end[1] - start[1];
     let len = (dx * dx + dy * dy).sqrt();
+    let cur_end = [start[0] + dx * progress, start[1] + dy * progress];
+    draw_line_thick(img, start, cur_end, col, width);
+
     if len < 5.0 {
         return;
     }
 
     let head_size = (width * 4.0).max(14.0);
-    let ux = dx / len;
-    let uy = dy / len;
+    let cur_len = len * progress;
 
-    let p1 = [
-        end[0] - head_size * ux + head_size * 0.5 * -uy,
-        end[1] - head_size * uy + head_size * 0.5 * ux,
-    ];
-    let p2 = [
-        end[0] - head_size * ux - head_size * 0.5 * -uy,
-        end[1] - head_size * uy - head_size * 0.5 * ux,
-    ];
+    // As requested: the arrowhead appears as soon as it can be distinguished from the line
+    if cur_len >= head_size * 0.4 {
+        let ux = dx / len;
+        let uy = dy / len;
 
-    draw_line_thick(img, end, p1, col, width);
-    draw_line_thick(img, end, p2, col, width);
+        let p1 = [
+            cur_end[0] - head_size * ux + head_size * 0.5 * -uy,
+            cur_end[1] - head_size * uy + head_size * 0.5 * ux,
+        ];
+        let p2 = [
+            cur_end[0] - head_size * ux - head_size * 0.5 * -uy,
+            cur_end[1] - head_size * uy - head_size * 0.5 * ux,
+        ];
+
+        draw_line_thick(img, cur_end, p1, col, width);
+        draw_line_thick(img, cur_end, p2, col, width);
+    }
+}
+
+fn draw_bezier(
+    img: &mut RgbaImage,
+    start: [f32; 2],
+    control: [f32; 2],
+    end: [f32; 2],
+    color: [u8; 4],
+    width: f32,
+    is_arrow: bool,
+    progress: f32,
+) {
+    let col = Rgba(color);
+    let max_steps = 32;
+    let actual_steps = ((max_steps as f32 * progress).ceil() as usize).max(1);
+
+    let mut prev = start;
+    let mut last_tangent = [end[0] - control[0], end[1] - control[1]];
+
+    for s in 1..=actual_steps {
+        let t = (s as f32 / max_steps as f32).min(progress);
+        let u = 1.0 - t;
+        let x = u * u * start[0] + 2.0 * u * t * control[0] + t * t * end[0];
+        let y = u * u * start[1] + 2.0 * u * t * control[1] + t * t * end[1];
+        let cur = [x, y];
+        draw_line_thick(img, prev, cur, col, width);
+
+        let dx = 2.0 * (1.0 - t) * (control[0] - start[0]) + 2.0 * t * (end[0] - control[0]);
+        let dy = 2.0 * (1.0 - t) * (control[1] - start[1]) + 2.0 * t * (end[1] - control[1]);
+        if dx * dx + dy * dy > 0.001 {
+            last_tangent = [dx, dy];
+        }
+
+        prev = cur;
+    }
+
+    if is_arrow && progress > 0.15 {
+        let head_size = (width * 4.0).max(14.0);
+        let len = (last_tangent[0] * last_tangent[0] + last_tangent[1] * last_tangent[1]).sqrt();
+        if len > 0.001 {
+            let ux = last_tangent[0] / len;
+            let uy = last_tangent[1] / len;
+            let tip = prev;
+            let p1 = [
+                tip[0] - head_size * ux + head_size * 0.5 * -uy,
+                tip[1] - head_size * uy + head_size * 0.5 * ux,
+            ];
+            let p2 = [
+                tip[0] - head_size * ux - head_size * 0.5 * -uy,
+                tip[1] - head_size * uy - head_size * 0.5 * ux,
+            ];
+            draw_line_thick(img, tip, p1, col, width);
+            draw_line_thick(img, tip, p2, col, width);
+        }
+    }
+}
+
+fn draw_polygon(
+    img: &mut RgbaImage,
+    points: &[[f32; 2]],
+    color: [u8; 4],
+    width: f32,
+    _fill: Option<[u8; 4]>,
+    progress: f32,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let col = Rgba(color);
+    let total_edges = points.len();
+    let max_edge = ((total_edges as f32 * progress).ceil() as usize).min(total_edges);
+
+    for i in 0..max_edge {
+        let p1 = points[i];
+        let p2 = points[(i + 1) % total_edges];
+        let edge_prog = if max_edge == i + 1 {
+            let seg_start = i as f32 / total_edges as f32;
+            let seg_len = 1.0 / total_edges as f32;
+            ((progress - seg_start) / seg_len).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let p_end = [
+            p1[0] + (p2[0] - p1[0]) * edge_prog,
+            p1[1] + (p2[1] - p1[1]) * edge_prog,
+        ];
+        draw_line_thick(img, p1, p_end, col, width);
+    }
 }
 
 fn draw_rectangle(
@@ -349,6 +534,18 @@ fn draw_rectangle(
     width: f32,
     fill: Option<[u8; 4]>,
 ) {
+    draw_rectangle_progress(img, min, max, color, width, fill, 1.0);
+}
+
+fn draw_rectangle_progress(
+    img: &mut RgbaImage,
+    min: [f32; 2],
+    max: [f32; 2],
+    color: [u8; 4],
+    width: f32,
+    fill: Option<[u8; 4]>,
+    progress: f32,
+) {
     let x0 = min[0].min(max[0]);
     let y0 = min[1].min(max[1]);
     let x1 = min[0].max(max[0]);
@@ -358,16 +555,58 @@ fn draw_rectangle(
         let f = Rgba(f_col);
         for y in (y0 as u32)..(y1 as u32).min(img.height()) {
             for x in (x0 as u32)..(x1 as u32).min(img.width()) {
-                img.put_pixel(x, y, f);
+                blend_pixel(img, x, y, f);
             }
         }
     }
 
+    let pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    draw_polygon(img, &pts, color, width, None, progress);
+}
+
+fn draw_ellipse_progress(
+    img: &mut RgbaImage,
+    min: [f32; 2],
+    max: [f32; 2],
+    color: [u8; 4],
+    width: f32,
+    fill: Option<[u8; 4]>,
+    progress: f32,
+) {
+    let cx = (min[0] + max[0]) / 2.0;
+    let cy = (min[1] + max[1]) / 2.0;
+    let rx = ((max[0] - min[0]).abs() / 2.0).max(1.0);
+    let ry = ((max[1] - min[1]).abs() / 2.0).max(1.0);
+
+    if let Some(f_col) = fill {
+        let (w, h) = img.dimensions();
+        let min_x = (cx - rx).max(0.0) as u32;
+        let max_x = (cx + rx).min(w as f32) as u32;
+        let min_y = (cy - ry).max(0.0) as u32;
+        let max_y = (cy + ry).min(h as f32) as u32;
+        let f = Rgba(f_col);
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                let dx = (x as f32 - cx) / rx;
+                let dy = (y as f32 - cy) / ry;
+                if dx * dx + dy * dy <= 1.0 {
+                    blend_pixel(img, x, y, f);
+                }
+            }
+        }
+    }
+
+    let total_steps = 48;
+    let actual_steps = ((total_steps as f32 * progress).ceil() as usize).max(1);
     let col = Rgba(color);
-    draw_line_thick(img, [x0, y0], [x1, y0], col, width);
-    draw_line_thick(img, [x1, y0], [x1, y1], col, width);
-    draw_line_thick(img, [x1, y1], [x0, y1], col, width);
-    draw_line_thick(img, [x0, y1], [x0, y0], col, width);
+
+    let mut prev = [cx, cy - ry];
+    for i in 1..=actual_steps {
+        let theta = -std::f32::consts::FRAC_PI_2 + (i as f32 / total_steps as f32) * std::f32::consts::TAU * progress;
+        let cur = [cx + rx * theta.cos(), cy + ry * theta.sin()];
+        draw_line_thick(img, prev, cur, col, width);
+        prev = cur;
+    }
 }
 
 fn draw_highlight(img: &mut RgbaImage, min: [f32; 2], max: [f32; 2], color: [u8; 4]) {
@@ -399,6 +638,7 @@ fn draw_highlight(img: &mut RgbaImage, min: [f32; 2], max: [f32; 2], color: [u8;
     }
 }
 
+#[allow(dead_code)]
 fn draw_ellipse(
     img: &mut RgbaImage,
     min: [f32; 2],
@@ -583,6 +823,20 @@ fn draw_simple_text_fallback(
     }
 }
 
+pub fn blend_pixel(img: &mut RgbaImage, x: u32, y: u32, col: Rgba<u8>) {
+    if col[3] == 255 {
+        img.put_pixel(x, y, col);
+    } else if col[3] > 0 {
+        let orig = img.get_pixel(x, y);
+        let a = col[3] as f32 / 255.0;
+        let r = (col[0] as f32 * a + orig[0] as f32 * (1.0 - a)).round() as u8;
+        let g = (col[1] as f32 * a + orig[1] as f32 * (1.0 - a)).round() as u8;
+        let b = (col[2] as f32 * a + orig[2] as f32 * (1.0 - a)).round() as u8;
+        let out_a = orig[3].max(col[3]);
+        img.put_pixel(x, y, Rgba([r, g, b, out_a]));
+    }
+}
+
 fn draw_line_thick(img: &mut RgbaImage, start: [f32; 2], end: [f32; 2], col: Rgba<u8>, width: f32) {
     let dx = end[0] - start[0];
     let dy = end[1] - start[1];
@@ -598,7 +852,7 @@ fn draw_line_thick(img: &mut RgbaImage, start: [f32; 2], end: [f32; 2], col: Rgb
             for oy in (-half as i32)..=(half as i32) {
                 let px = (x as i32 + ox).clamp(0, img.width() as i32 - 1) as u32;
                 let py = (y as i32 + oy).clamp(0, img.height() as i32 - 1) as u32;
-                img.put_pixel(px, py, col);
+                blend_pixel(img, px, py, col);
             }
         }
     }

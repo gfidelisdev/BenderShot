@@ -59,7 +59,7 @@ pub fn run_pin_window(image: RgbaImage) -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Enhanced Shot - Pinned")
+            .with_title("BenderShot - Pinned")
             .with_always_on_top()
             .with_decorations(false)
             .with_transparent(true)
@@ -68,7 +68,7 @@ pub fn run_pin_window(image: RgbaImage) -> Result<(), eframe::Error> {
     };
 
     eframe::run_native(
-        "Enhanced Shot Pin",
+        "BenderShot Pin",
         options,
         Box::new(|_cc| Ok(Box::new(PinApp::new(image)))),
     )

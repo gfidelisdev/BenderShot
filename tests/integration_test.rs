@@ -1,6 +1,6 @@
-use enhanced_shot::export::Exporter;
-use enhanced_shot::model::*;
-use enhanced_shot::rasterize::rasterize_scene;
+use bendershot::export::Exporter;
+use bendershot::model::*;
+use bendershot::rasterize::rasterize_scene;
 use image::{Rgba, RgbaImage};
 use std::fs;
 

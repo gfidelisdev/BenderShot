@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use enhanced_shot::cli::{Cli, Commands};
-use enhanced_shot::{capture, indicator, ui};
+use bendershot::cli::{Cli, Commands};
+use bendershot::{capture, indicator, ui};
 use std::sync::mpsc::channel;
 
 #[tokio::main]
@@ -13,7 +13,7 @@ async fn main() -> Result<()> {
 
     match command {
         Commands::Daemon => {
-            println!("Enhanced Shot daemon iniciado. Ícone ativo no painel superior.");
+            println!("BenderShot daemon iniciado. Ícone ativo no painel superior.");
             indicator::run_indicator().await?;
         }
         Commands::Edit { path } => {
@@ -33,18 +33,18 @@ async fn main() -> Result<()> {
             open_editor_session(image)?;
         }
         Commands::Record => {
-            if enhanced_shot::video::ScreenRecorder::is_recording() {
+            if bendershot::video::ScreenRecorder::is_recording() {
                 println!("Finalizando gravação de tela...");
-                let video_path = enhanced_shot::video::ScreenRecorder::stop_recording()?;
+                let video_path = bendershot::video::ScreenRecorder::stop_recording()?;
                 println!("Gravação concluída. Abrindo editor de vídeo para: {:?}", video_path);
-                enhanced_shot::ui::editor::run_video_editor(video_path)
+                bendershot::ui::editor::run_video_editor(video_path)
                     .map_err(|e| anyhow::anyhow!("{e:?}"))?;
             } else {
-                enhanced_shot::video::ScreenRecorder::start_recording()?;
+                bendershot::video::ScreenRecorder::start_recording()?;
             }
         }
         Commands::RecordWorker => {
-            enhanced_shot::video::ScreenRecorder::run_worker().await?;
+            bendershot::video::ScreenRecorder::run_worker().await?;
         }
     }
 

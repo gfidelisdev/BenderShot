@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "enhanced-shot")]
-#[command(author, version, about = "High-performance screenshot capture and annotation tool for Linux Wayland", long_about = None)]
+#[command(name = "bendershot")]
+#[command(author, version, about = "High-performance screenshot capture, screen recording, and annotation tool for Linux Wayland", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

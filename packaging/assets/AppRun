@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -e
 
-# AppRun script for Enhanced Shot AppImage
+# AppRun script for BenderShot AppImage
 HERE="$(dirname "$(readlink -f "${0}")")"
 
 export PATH="${HERE}/usr/bin:${PATH}"
 export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
+BIN="${HERE}/usr/bin/bendershot"
+if [ ! -x "${BIN}" ]; then
+    BIN="${HERE}/usr/bin/enhanced-shot"
+fi
+
 # Forward arguments or default to region capture
 if [ $# -eq 0 ]; then
-    exec "${HERE}/usr/bin/enhanced-shot" region
+    exec "${BIN}" region
 else
-    exec "${HERE}/usr/bin/enhanced-shot" "$@"
+    exec "${BIN}" "$@"
 fi

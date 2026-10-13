@@ -12,6 +12,8 @@ pub fn setup_fonts(ctx: &egui::Context) {
             ("/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf", "adwaita_sans"),
             ("/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf", "cantarell"),
             ("/usr/share/fonts/google-noto/NotoSans-Regular.ttf", "noto_sans"),
+            ("C:\\Windows\\Fonts\\segoeui.ttf", "segoe_ui"),
+            ("C:\\Windows\\Fonts\\arial.ttf", "arial"),
         ];
 
         for (path, name) in ui_font_candidates {
@@ -32,6 +34,8 @@ pub fn setup_fonts(ctx: &egui::Context) {
             ("/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf", "noto_emoji"),
             ("/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Regular.ttf", "adwaita_mono"),
             ("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", "noto_symbols"),
+            ("C:\\Windows\\Fonts\\seguiemj.ttf", "segoe_emoji"),
+            ("C:\\Windows\\Fonts\\seguisym.ttf", "segoe_sym"),
         ];
 
         for (path, name) in symbol_font_candidates {

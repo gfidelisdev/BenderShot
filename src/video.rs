@@ -3,19 +3,15 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use image::RgbaImage;
 
-const PID_FILE_PATH: &str = "/tmp/enhanced-shot-record.pid";
-const TEMP_VIDEO_PATH: &str = "/tmp/enhanced-shot-rec.mp4";
-const VIDEO_PATH_FILE: &str = "/tmp/enhanced-shot-rec-path.txt";
-
 pub struct ScreenRecorder;
 
 impl ScreenRecorder {
     /// Checks if a recording session is currently active
     pub fn is_recording() -> bool {
-        if let Ok(content) = std::fs::read_to_string(PID_FILE_PATH) {
-            if let Ok(pid) = content.trim().parse::<i32>() {
-                // Check if process with this pid exists via /proc/{pid}
-                return Path::new(&format!("/proc/{}", pid)).exists();
+        let pid_path = crate::platform::imp::video::pid_file_path();
+        if let Ok(content) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = content.trim().parse::<u32>() {
+                return crate::platform::imp::video::is_process_running(pid);
             }
         }
         false
@@ -35,7 +31,7 @@ impl ScreenRecorder {
     /// Starts recording via background worker process
     pub fn start_recording() -> Result<()> {
         let exe = std::env::current_exe()
-            .unwrap_or_else(|_| PathBuf::from("enhanced-shot"));
+            .unwrap_or_else(|_| PathBuf::from("bendershot"));
 
         let mut cmd = Command::new(exe);
         cmd.arg("record-worker")
@@ -43,184 +39,123 @@ impl ScreenRecorder {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-
-        let child = cmd.spawn().context("Falha ao iniciar processo em segundo plano de gravação")?;
+        let child = cmd.spawn().context("Falha ao iniciar processo de gravação")?;
         let pid = child.id();
-        std::fs::write(PID_FILE_PATH, pid.to_string())
-            .context("Falha ao salvar arquivo de PID de gravação")?;
 
-        // Give worker a moment to initialize screencast
+        // Write PID file
+        let pid_path = crate::platform::imp::video::pid_file_path();
+        std::fs::write(&pid_path, pid.to_string())
+            .context("Falha ao escrever arquivo PID de gravação")?;
+
+        // Give worker a brief moment to initialize
         std::thread::sleep(std::time::Duration::from_millis(300));
         Ok(())
     }
 
-    /// Runs the persistent recording worker maintaining the GNOME Screencast session
+    /// Runs the persistent recording worker maintaining the screencast session
     pub async fn run_worker() -> Result<()> {
-        // 1. Notify user (short-lived banner), then wait for it to disappear BEFORE capture starts
-        let _ = Command::new("notify-send")
-            .args([
-                "-i", "media-record",
-                "-a", "Enhanced Shot",
-                "-t", "1200",
-                "-h", "string:x-canonical-private-synchronous:enhanced-shot-rec",
-                "🔴 Gravação iniciando…",
-                "Pressione o atalho novamente para finalizar.",
-            ])
-            .status();
-        tokio::time::sleep(std::time::Duration::from_millis(4500)).await;
-
-        // 2. Start GNOME Screencast via python helper script to guarantee persistent session
-        let script = r#"
-import dbus, sys, time, signal
-
-bus = dbus.SessionBus()
-proxy = bus.get_object("org.gnome.Shell.Screencast", "/org/gnome/Shell/Screencast")
-iface = dbus.Interface(proxy, "org.gnome.Shell.Screencast")
-
-res = iface.Screencast("enhanced_shot_rec_%d_%t", {})
-filename = str(res[1])
-
-with open("/tmp/enhanced-shot-rec-path.txt", "w") as f:
-    f.write(filename)
-
-stop = False
-def sig_handler(sig, frame):
-    global stop
-    stop = True
-
-signal.signal(signal.SIGTERM, sig_handler)
-signal.signal(signal.SIGINT, sig_handler)
-
-while not stop:
-    time.sleep(0.05)
-
-iface.StopScreencast()
-time.sleep(0.5)
-"#;
-
-        let mut py_cmd = Command::new("python3");
-        py_cmd.args(["-c", script])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        let mut py_child = py_cmd.spawn().context("Falha ao iniciar gravador GNOME Screencast")?;
-
-        // Handle termination signals in worker
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate())?;
-        let mut sigint = signal(SignalKind::interrupt())?;
-
-        tokio::select! {
-            _ = sigterm.recv() => {},
-            _ = sigint.recv() => {},
-        }
-
-        // Send SIGTERM to python helper to cleanly call StopScreencast
-        let _ = Command::new("kill")
-            .args(["-TERM", &py_child.id().to_string()])
-            .status();
-
-        let _ = py_child.wait();
-        Ok(())
+        crate::platform::imp::video::run_recorder_worker().await
     }
 
     /// Stops active recording session and returns recorded file path
     pub fn stop_recording() -> Result<PathBuf> {
-        if let Ok(content) = std::fs::read_to_string(PID_FILE_PATH) {
-            if let Ok(pid) = content.trim().parse::<i32>() {
-                // Send SIGTERM to worker process so it cleanly finishes the screencast
-                let _ = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
+        let pid_path = crate::platform::imp::video::pid_file_path();
+        if let Ok(content) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = content.trim().parse::<u32>() {
+                crate::platform::imp::video::stop_worker_process(pid);
 
-                // Wait for worker process to exit cleanly
-                let proc_path = format!("/proc/{}", pid);
-                for _ in 0..40 {
-                    if !Path::new(&proc_path).exists() {
+                // Wait up to 3s for screencast finalization
+                for _ in 0..30 {
+                    if !crate::platform::imp::video::is_process_running(pid) {
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             }
         }
-        let _ = std::fs::remove_file(PID_FILE_PATH);
+        let _ = std::fs::remove_file(&pid_path);
 
         // Notify user that recording completed
-        let _ = Command::new("notify-send")
-            .args([
-                "-i", "video-x-generic",
-                "-a", "Enhanced Shot",
-                "🎬 Gravação Concluída",
-                "Abrindo editor de vídeo...",
-            ])
-            .status();
+        crate::platform::imp::video::send_notification(
+            "🎬 Gravação Concluída",
+            "Abrindo editor de vídeo...",
+            "video-x-generic",
+        );
 
-        if let Ok(path_str) = std::fs::read_to_string(VIDEO_PATH_FILE) {
+        let path_file = crate::platform::imp::video::video_path_file();
+        if let Ok(path_str) = std::fs::read_to_string(&path_file) {
             let p = PathBuf::from(path_str.trim());
             if p.exists() {
-                let _ = std::fs::remove_file(VIDEO_PATH_FILE);
+                let _ = std::fs::remove_file(&path_file);
                 return Ok(p);
             }
         }
 
         // Fallback default temp path
-        Ok(PathBuf::from(TEMP_VIDEO_PATH))
+        Ok(crate::platform::imp::video::temp_video_path())
     }
 
     /// Detects desktop resolution across all monitors
     pub fn detect_screen_dimensions() -> (u32, u32) {
-        if let Ok(output) = Command::new("xdpyinfo").output() {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                for line in text.lines() {
-                    if line.contains("dimensions:") {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 2 {
-                            let dims = parts[1]; // e.g. "5360x1440"
-                            let mut dim_parts = dims.split('x');
-                            if let (Some(w), Some(h)) = (dim_parts.next(), dim_parts.next()) {
-                                if let (Ok(width), Ok(height)) = (w.parse::<u32>(), h.parse::<u32>()) {
-                                    return (width, height);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        (1920, 1080)
+        crate::platform::imp::video::detect_screen_dimensions()
     }
 
-    /// Detects best available H.264/video encoder on the host system
+    /// Detects best available video encoder in ffmpeg
     pub fn detect_video_encoder() -> String {
-        if let Ok(output) = Command::new("ffmpeg").args(["-encoders"]).output() {
+        if let Ok(output) = Command::new(Self::ffmpeg_bin()).args(["-encoders"]).output() {
             let text = String::from_utf8_lossy(&output.stdout);
+            if text.contains("libx264") {
+                return "libx264".into();
+            }
             if text.contains("libopenh264") {
                 return "libopenh264".into();
-            } else if text.contains("libx264") {
-                return "libx264".into();
-            } else if text.contains("h264_vaapi") {
+            }
+            if text.contains("h264_nvenc") {
+                return "h264_nvenc".into();
+            }
+            if text.contains("h264_vaapi") {
                 return "h264_vaapi".into();
-            } else if text.contains("mpeg4") {
+            }
+            if text.contains("mpeg4") {
                 return "mpeg4".into();
             }
         }
-        "libopenh264".into()
+        "libx264".into()
+    }
+
+    /// Locates the ffmpeg binary (local to app directory or in PATH)
+    pub fn ffmpeg_bin() -> std::ffi::OsString {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let local = dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+                if local.exists() {
+                    return local.into_os_string();
+                }
+            }
+        }
+        (if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }).into()
+    }
+
+    /// Locates the ffprobe binary (local to app directory or in PATH)
+    pub fn ffprobe_bin() -> std::ffi::OsString {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let local = dir.join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
+                if local.exists() {
+                    return local.into_os_string();
+                }
+            }
+        }
+        (if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }).into()
     }
 }
 
 pub struct VideoExporter;
 
 impl VideoExporter {
-    /// Extracts video metadata (duration in ms, width, height) using ffprobe
+    /// Probes video duration in milliseconds via ffprobe
     pub fn probe_video_duration(video_path: &Path) -> Result<u64> {
-        let out = Command::new("ffprobe")
+        let out = Command::new(ScreenRecorder::ffprobe_bin())
             .args([
                 "-v", "error",
                 "-show_entries", "format=duration",
@@ -230,32 +165,31 @@ impl VideoExporter {
             .output()?;
 
         if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if let Ok(sec) = s.trim().parse::<f64>() {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Ok(sec) = text.parse::<f64>() {
                 return Ok((sec * 1000.0) as u64);
             }
         }
-        // Fallback default duration 5000ms
         Ok(5000)
     }
 
     /// Extracts video frame at specific timestamp in ms as RgbaImage
     pub fn extract_frame_at(video_path: &Path, time_ms: u64) -> Result<RgbaImage> {
         let sec = (time_ms as f64) / 1000.0;
-        let tmp_frame = format!("/tmp/enhanced-shot-frame-{}.png", std::process::id());
+        let tmp_frame = std::env::temp_dir().join(format!("bendershot-frame-{}.png", std::process::id()));
 
-        let out = Command::new("ffmpeg")
+        let out = Command::new(ScreenRecorder::ffmpeg_bin())
             .args([
                 "-y",
                 "-ss", &format!("{:.3}", sec),
                 "-i", video_path.to_str().unwrap_or_default(),
                 "-vframes", "1",
                 "-q:v", "2",
-                &tmp_frame,
+                tmp_frame.to_str().unwrap_or_default(),
             ])
             .output()?;
 
-        if out.status.success() && Path::new(&tmp_frame).exists() {
+        if out.status.success() && tmp_frame.exists() {
             let loaded = image::open(&tmp_frame)?;
             let _ = std::fs::remove_file(&tmp_frame);
             Ok(loaded.to_rgba8())
@@ -268,10 +202,58 @@ impl VideoExporter {
     pub fn export_annotated_video(
         input_path: &Path,
         output_path: &Path,
-        _overlay_frames_dir: Option<&Path>,
+        scene: Option<&crate::model::Scene>,
     ) -> Result<()> {
         let encoder = ScreenRecorder::detect_video_encoder();
-        let out = Command::new("ffmpeg")
+
+        if let Some(sc) = scene {
+            if !sc.items.is_empty() {
+                // Burn annotations onto frames
+                let tmp_dir = std::env::temp_dir().join(format!("bendershot-export-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                std::fs::create_dir_all(&tmp_dir)?;
+
+                let fps = 15;
+                let pattern = tmp_dir.join("f%05d.png");
+                let _ = Command::new("ffmpeg")
+                    .args([
+                        "-y", "-loglevel", "error",
+                        "-i", input_path.to_str().unwrap_or_default(),
+                        "-vf", &format!("fps={}", fps),
+                        pattern.to_str().unwrap_or_default(),
+                    ])
+                    .output()?;
+
+                let mut frame_idx = 1;
+                while let Ok(img) = image::open(tmp_dir.join(format!("f{:05}.png", frame_idx))) {
+                    let time_ms = (frame_idx - 1) as u64 * 1000 / fps as u64;
+                    let rgba = img.to_rgba8();
+                    let rendered = crate::rasterize::rasterize_scene_at_time(&rgba, sc, time_ms);
+                    rendered.save(tmp_dir.join(format!("f{:05}.png", frame_idx)))?;
+                    frame_idx += 1;
+                }
+
+                if frame_idx > 1 {
+                    let out = Command::new(ScreenRecorder::ffmpeg_bin())
+                        .args([
+                            "-y",
+                            "-framerate", &fps.to_string(),
+                            "-i", pattern.to_str().unwrap_or_default(),
+                            "-c:v", &encoder,
+                            "-pix_fmt", "yuv420p",
+                            output_path.to_str().unwrap_or_default(),
+                        ])
+                        .output()?;
+                    let _ = std::fs::remove_dir_all(&tmp_dir);
+                    if out.status.success() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Fast fallback or copy when no annotations
+        let out = Command::new(ScreenRecorder::ffmpeg_bin())
             .args([
                 "-y",
                 "-i", input_path.to_str().unwrap_or_default(),
@@ -285,7 +267,7 @@ impl VideoExporter {
             return Ok(());
         }
 
-        // Fallback: try copy or mpeg4
+        // Fallback: try stream copy
         let fallback_out = Command::new("ffmpeg")
             .args([
                 "-y",
