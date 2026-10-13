@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use anyhow::Result;
 use clap::Parser;
 use bendershot::cli::{Cli, Commands};
@@ -6,6 +8,11 @@ use std::sync::mpsc::channel;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS);
+    }
+
     tracing_subscriber::fmt::init();
 
     let args = Cli::parse();
@@ -13,6 +20,7 @@ async fn main() -> Result<()> {
 
     match command {
         Commands::Daemon => {
+            #[cfg(target_os = "linux")]
             println!("BenderShot daemon iniciado. Ícone ativo no painel superior.");
             indicator::run_indicator().await?;
         }

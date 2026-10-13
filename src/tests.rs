@@ -327,3 +327,28 @@ fn test_export_default_directory() {
     let dir = crate::export::Exporter::default_screenshot_dir();
     assert!(dir.is_ok(), "default_screenshot_dir must resolve successfully");
 }
+
+#[cfg(target_os = "windows")]
+#[test]
+fn test_windows_parse_hotkey() {
+    use crate::platform::windows::shortcuts::ShortcutManager;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        MOD_CONTROL, MOD_SHIFT, MOD_ALT, MOD_WIN, MOD_NOREPEAT, VK_SNAPSHOT
+    };
+
+    let p1 = ShortcutManager::parse_hotkey("<Ctrl><Shift>S").expect("Should parse <Ctrl><Shift>S");
+    assert_eq!(p1.0, MOD_NOREPEAT | MOD_CONTROL | MOD_SHIFT);
+    assert_eq!(p1.1, 0x53); // 'S'
+
+    let p2 = ShortcutManager::parse_hotkey("Ctrl+Shift+S").expect("Should parse Ctrl+Shift+S");
+    assert_eq!(p2, p1);
+
+    let p3 = ShortcutManager::parse_hotkey("Print").expect("Should parse Print");
+    assert_eq!(p3.0, MOD_NOREPEAT);
+    assert_eq!(p3.1, VK_SNAPSHOT as u32);
+
+    let p4 = ShortcutManager::parse_hotkey("<Super><Alt>R").expect("Should parse <Super><Alt>R");
+    assert_eq!(p4.0, MOD_NOREPEAT | MOD_WIN | MOD_ALT);
+    assert_eq!(p4.1, 0x52); // 'R'
+}
+
