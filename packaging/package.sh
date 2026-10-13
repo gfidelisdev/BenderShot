@@ -104,7 +104,7 @@ cp "${ASSETS_DIR}/bendershot.svg" "${RPM_BUILD_DIR}/SOURCES/"
 cp "${ASSETS_DIR}/bendershot.service" "${RPM_BUILD_DIR}/SOURCES/"
 cp "${SCRIPT_DIR}/rpm/bendershot.spec" "${RPM_BUILD_DIR}/SPECS/"
 
-rpmbuild --define "_topdir ${RPM_BUILD_DIR}" -bb "${RPM_BUILD_DIR}/SPECS/bendershot.spec"
+rpmbuild --define "_topdir ${RPM_BUILD_DIR}" --define "_userunitdir /usr/lib/systemd/user" -bb "${RPM_BUILD_DIR}/SPECS/bendershot.spec"
 find "${RPM_BUILD_DIR}/RPMS" -name "*.rpm" -exec cp {} "${DIST_DIR}/" \;
 rm -rf "${RPM_BUILD_DIR}"
 echo "    Created RPM in ${DIST_DIR}/"

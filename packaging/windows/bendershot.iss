@@ -50,6 +50,7 @@ Name: "installffmpeg"; Description: "{cm:FFmpegTaskDesc}"; GroupDescription: "{c
 Source: "..\..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\..\CONTEXT.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "install-ffmpeg.ps1"; DestDir: "{tmp}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -63,7 +64,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 ; Baixa e configura o FFmpeg se a opção foi selecionada
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -Command ""if (Get-Command winget -ErrorAction SilentlyContinue) { Write-Host 'Instalando FFmpeg via winget...'; winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements --silent } else { Write-Host 'Baixando FFmpeg...'; try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'; $tmp = Join-Path $env:TEMP 'ffmpeg.zip'; Invoke-WebRequest -Uri $url -OutFile $tmp; Expand-Archive -Path $tmp -DestinationPath (Join-Path $env:TEMP 'ffmpeg_unpacked') -Force; Get-ChildItem -Path (Join-Path $env:TEMP 'ffmpeg_unpacked') -Recurse -Filter 'ffmpeg.exe' | ForEach-Object { Copy-Item $_.FullName '{app}\ffmpeg.exe' -Force }; Get-ChildItem -Path (Join-Path $env:TEMP 'ffmpeg_unpacked') -Recurse -Filter 'ffprobe.exe' | ForEach-Object { Copy-Item $_.FullName '{app}\ffprobe.exe' -Force }; Remove-Item -Recurse -Force (Join-Path $env:TEMP 'ffmpeg_unpacked') -ErrorAction SilentlyContinue; Remove-Item -Force $tmp -ErrorAction SilentlyContinue } catch { Write-Warning 'Falha ao baixar FFmpeg.' } }"""; StatusMsg: "{cm:FFmpegStatusMsg}"; Tasks: installffmpeg; Flags: runhidden
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{tmp}\install-ffmpeg.ps1"" -AppDir ""{app}"""; StatusMsg: "{cm:FFmpegStatusMsg}"; Tasks: installffmpeg; Flags: runhidden
 
 ; Inicia o daemon em segundo plano imediatamente após concluir a instalação
 Filename: "{app}\{#MyAppExeName}"; Parameters: "daemon"; Description: "Iniciar o serviço BenderShot em segundo plano agora"; Flags: nowait postinstall skipifsilent

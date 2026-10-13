@@ -1,3 +1,5 @@
+%{!?_userunitdir: %global _userunitdir /usr/lib/systemd/user}
+
 Name:           bendershot
 Version:        0.1.0
 Release:        1%{?dist}
