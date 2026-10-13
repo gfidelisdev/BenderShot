@@ -23,7 +23,7 @@ scratch/
 test_output.png
 
 # Packaging build artifacts
-#/packaging/dist/
+/packaging/dist/
 /packaging/appimage/appimagetool*
 /packaging/appimage/runtime*
 /packaging/appimage/*.AppDir
