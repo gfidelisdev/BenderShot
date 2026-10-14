@@ -57,6 +57,14 @@ impl Tray for BenderShotTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
+                label: "🧙 Assistente de Configuração".into(),
+                activate: Box::new(|_| {
+                    spawn_wizard();
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
                 label: "⚙️ Configurações".into(),
                 activate: Box::new(|_| {
                     spawn_settings();
@@ -78,34 +86,76 @@ impl Tray for BenderShotTray {
 }
 
 fn spawn_capture(mode: CaptureMode) {
-    if let Ok(exe) = std::env::current_exe() {
-        let arg = match mode {
-            CaptureMode::Region => "region",
-            CaptureMode::Fullscreen => "full",
-            CaptureMode::Window => "window",
-        };
-        let _ = Command::new(exe).arg(arg).spawn();
-    }
+    let exe = crate::platform::linux::shortcuts::get_executable_command();
+    let arg = match mode {
+        CaptureMode::Region => "region",
+        CaptureMode::Fullscreen => "full",
+        CaptureMode::Window => "window",
+    };
+    let _ = Command::new(exe).arg(arg).spawn();
 }
 
 fn spawn_record() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe).arg("record").spawn();
-    }
+    let exe = crate::platform::linux::shortcuts::get_executable_command();
+    let _ = Command::new(exe).arg("record").spawn();
 }
 
 fn spawn_settings() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe).arg("settings").spawn();
-    }
+    let exe = crate::platform::linux::shortcuts::get_executable_command();
+    let _ = Command::new(exe).arg("settings").spawn();
+}
+
+fn spawn_wizard() {
+    let exe = crate::platform::linux::shortcuts::get_executable_command();
+    let _ = Command::new(exe).arg("wizard").spawn();
 }
 
 pub async fn run_indicator() -> anyhow::Result<()> {
     tracing::info!("Starting BenderShot top-panel indicator service...");
-    let _handle = BenderShotTray.spawn().await?;
 
-    // Keep service running in Tokio runtime
-    tokio::signal::ctrl_c().await?;
+    // Auto-configure shortcuts on first run of daemon if not already completed
+    if !crate::config::AppConfig::is_setup_completed() {
+        tracing::info!("First run of BenderShot daemon detected. Auto-configuring GNOME shortcuts...");
+        let _ = crate::shortcuts::ShortcutManager::set_binding("Print");
+        let _ = crate::shortcuts::ShortcutManager::set_record_binding("<Ctrl><Shift>R");
+        let _ = crate::shortcuts::ShortcutManager::configure_autostart(true);
+        crate::config::AppConfig::mark_setup_completed();
+        crate::shortcuts::ShortcutManager::send_notification(
+            "BenderShot Ativo",
+            "BenderShot está ativo na bandeja! Pressione PrintScreen para capturar a tela.",
+        );
+    }
+
+    match BenderShotTray.spawn().await {
+        Ok(_handle) => {
+            tracing::info!("BenderShot tray indicator active.");
+            tokio::signal::ctrl_c().await?;
+        }
+        Err(e) => {
+            tracing::warn!(
+                "StatusNotifierWatcher não disponível no ambiente gráfico atual (ex: GNOME padrão sem extensão AppIndicator): {}. Mantendo serviço daemon ativo em segundo plano.",
+                e
+            );
+
+            // Keep service alive and periodically attempt to connect if tray service starts
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if let Ok(_handle) = BenderShotTray.spawn().await {
+                            tracing::info!("Conectado com sucesso ao StatusNotifierWatcher (bandeja ativada)!");
+                            let _ = tokio::signal::ctrl_c().await;
+                            break;
+                        }
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     tracing::info!("Exiting indicator service.");
     Ok(())
 }

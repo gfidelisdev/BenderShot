@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BenderShot Daemon
+Comment=BenderShot captura e atalhos na bandeja
+Exec=bendershot daemon
+Icon=bendershot
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true

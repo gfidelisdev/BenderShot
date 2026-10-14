@@ -24,10 +24,12 @@ mkdir -p %{buildroot}%{_bindir}
 mkdir -p %{buildroot}%{_datadir}/applications
 mkdir -p %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
 mkdir -p %{buildroot}%{_userunitdir}
+mkdir -p %{buildroot}%{_sysconfdir}/xdg/autostart
 
 install -m 755 %{_sourcedir}/bendershot %{buildroot}%{_bindir}/bendershot
 ln -sf bendershot %{buildroot}%{_bindir}/enhanced-shot
 install -m 644 %{_sourcedir}/bendershot.desktop %{buildroot}%{_datadir}/applications/bendershot.desktop
+install -m 644 %{_sourcedir}/bendershot-autostart.desktop %{buildroot}%{_sysconfdir}/xdg/autostart/bendershot-autostart.desktop
 install -m 644 %{_sourcedir}/bendershot.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/bendershot.svg
 install -m 644 %{_sourcedir}/bendershot.service %{buildroot}%{_userunitdir}/bendershot.service
 
@@ -39,6 +41,20 @@ if [ -x %{_bindir}/gtk-update-icon-cache ]; then
     %{_bindir}/gtk-update-icon-cache -f -t %{_datadir}/icons/hicolor &>/dev/null || :
 fi
 
+# Enable systemd user service globally for desktop sessions
+if [ -x %{_bindir}/systemctl ]; then
+    %{_bindir}/systemctl --global enable bendershot.service &>/dev/null || :
+fi
+
+# If installed via sudo by active desktop user, configure shortcuts and start daemon
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    SUDO_UID=$(id -u "$SUDO_USER" 2>/dev/null || :)
+    if [ -n "$SUDO_UID" ]; then
+        systemctl --user -M "${SUDO_USER}@" enable --now bendershot.service &>/dev/null || :
+        su - "$SUDO_USER" -c "XDG_RUNTIME_DIR=/run/user/${SUDO_UID} %{_bindir}/bendershot auto-setup" &>/dev/null || :
+    fi
+fi
+
 %postun
 if [ -x %{_bindir}/update-desktop-database ]; then
     %{_bindir}/update-desktop-database %{_datadir}/applications &>/dev/null || :
@@ -46,11 +62,21 @@ fi
 if [ -x %{_bindir}/gtk-update-icon-cache ]; then
     %{_bindir}/gtk-update-icon-cache -f -t %{_datadir}/icons/hicolor &>/dev/null || :
 fi
+if [ $1 -eq 0 ]; then
+    if [ -x %{_bindir}/systemctl ]; then
+        %{_bindir}/systemctl --global disable bendershot.service &>/dev/null || :
+    fi
+    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+        systemctl --user -M "${SUDO_USER}@" stop bendershot.service &>/dev/null || :
+        systemctl --user -M "${SUDO_USER}@" disable bendershot.service &>/dev/null || :
+    fi
+fi
 
 %files
 %{_bindir}/bendershot
 %{_bindir}/enhanced-shot
 %{_datadir}/applications/bendershot.desktop
+%{_sysconfdir}/xdg/autostart/bendershot-autostart.desktop
 %{_datadir}/icons/hicolor/scalable/apps/bendershot.svg
 %{_userunitdir}/bendershot.service
 

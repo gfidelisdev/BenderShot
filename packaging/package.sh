@@ -36,12 +36,14 @@ mkdir -p "${DEB_ROOT}/usr/bin"
 mkdir -p "${DEB_ROOT}/usr/share/applications"
 mkdir -p "${DEB_ROOT}/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "${DEB_ROOT}/usr/lib/systemd/user"
+mkdir -p "${DEB_ROOT}/etc/xdg/autostart"
 
 cp "${BINARY}" "${DEB_ROOT}/usr/bin/${BIN_NAME}"
 chmod 755 "${DEB_ROOT}/usr/bin/${BIN_NAME}"
 ln -sf "${BIN_NAME}" "${DEB_ROOT}/usr/bin/enhanced-shot"
 
 cp "${ASSETS_DIR}/bendershot.desktop" "${DEB_ROOT}/usr/share/applications/"
+cp "${ASSETS_DIR}/bendershot-autostart.desktop" "${DEB_ROOT}/etc/xdg/autostart/"
 cp "${ASSETS_DIR}/bendershot.svg" "${DEB_ROOT}/usr/share/icons/hicolor/scalable/apps/"
 cp "${ASSETS_DIR}/bendershot.service" "${DEB_ROOT}/usr/lib/systemd/user/"
 
@@ -69,6 +71,20 @@ fi
 if [ -x /usr/bin/gtk-update-icon-cache ]; then
     /usr/bin/gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
 fi
+
+# Enable systemd user service globally for all desktop logins
+if [ -x /usr/bin/systemctl ]; then
+    /usr/bin/systemctl --global enable bendershot.service 2>/dev/null || true
+fi
+
+# If installed via sudo by active desktop user, configure shortcuts and start daemon
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    SUDO_UID=$(id -u "$SUDO_USER" 2>/dev/null || true)
+    if [ -n "$SUDO_UID" ]; then
+        systemctl --user -M "${SUDO_USER}@" enable --now bendershot.service 2>/dev/null || true
+        su - "$SUDO_USER" -c "XDG_RUNTIME_DIR=/run/user/${SUDO_UID} /usr/bin/bendershot auto-setup" 2>/dev/null || true
+    fi
+fi
 exit 0
 EOF
 chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
@@ -81,6 +97,15 @@ if [ -x /usr/bin/update-desktop-database ]; then
 fi
 if [ -x /usr/bin/gtk-update-icon-cache ]; then
     /usr/bin/gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+fi
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if [ -x /usr/bin/systemctl ]; then
+        /usr/bin/systemctl --global disable bendershot.service 2>/dev/null || true
+    fi
+    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+        systemctl --user -M "${SUDO_USER}@" stop bendershot.service 2>/dev/null || true
+        systemctl --user -M "${SUDO_USER}@" disable bendershot.service 2>/dev/null || true
+    fi
 fi
 exit 0
 EOF
@@ -100,6 +125,7 @@ mkdir -p "${RPM_BUILD_DIR}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
 cp "${BINARY}" "${RPM_BUILD_DIR}/SOURCES/${BIN_NAME}"
 cp "${ASSETS_DIR}/bendershot.desktop" "${RPM_BUILD_DIR}/SOURCES/"
+cp "${ASSETS_DIR}/bendershot-autostart.desktop" "${RPM_BUILD_DIR}/SOURCES/"
 cp "${ASSETS_DIR}/bendershot.svg" "${RPM_BUILD_DIR}/SOURCES/"
 cp "${ASSETS_DIR}/bendershot.service" "${RPM_BUILD_DIR}/SOURCES/"
 cp "${SCRIPT_DIR}/rpm/bendershot.spec" "${RPM_BUILD_DIR}/SPECS/"
@@ -159,6 +185,7 @@ mkdir -p "${TARBALL_DIR}/assets"
 
 cp "${BINARY}" "${TARBALL_DIR}/${BIN_NAME}"
 cp "${ASSETS_DIR}/bendershot.desktop" "${TARBALL_DIR}/assets/"
+cp "${ASSETS_DIR}/bendershot-autostart.desktop" "${TARBALL_DIR}/assets/"
 cp "${ASSETS_DIR}/bendershot.svg" "${TARBALL_DIR}/assets/"
 cp "${ASSETS_DIR}/bendershot.service" "${TARBALL_DIR}/assets/"
 cp "${ROOT_DIR}/install.sh" "${TARBALL_DIR}/install.sh"

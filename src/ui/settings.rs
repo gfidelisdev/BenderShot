@@ -309,6 +309,12 @@ impl eframe::App for SettingsApp {
                     }
                 }
 
+                if ui.button("🧙 Assistente").clicked() {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe).arg("wizard").spawn();
+                    }
+                }
+
                 if ui.button("Fechar").clicked() {
                     should_close = true;
                 }

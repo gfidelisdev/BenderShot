@@ -36,6 +36,13 @@ pub enum Commands {
     #[command(alias = "config")]
     Settings,
 
+    /// Open graphical setup wizard for shortcuts and autostart configuration
+    #[command(alias = "setup")]
+    Wizard,
+
+    /// Non-interactive automated setup (enables default shortcuts, autostart, and daemon)
+    AutoSetup,
+
     #[command(hide = true)]
     RecordWorker,
 }

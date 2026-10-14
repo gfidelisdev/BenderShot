@@ -361,3 +361,19 @@ fn test_windows_parse_hotkey() {
     assert_eq!(ShortcutManager::get_current_binding(), "Ctrl+Print");
 }
 
+#[test]
+fn test_app_config_defaults() {
+    let cfg = crate::config::AppConfig::default();
+    assert!(cfg.autostart_enabled);
+    assert!(!cfg.capture_shortcut.is_empty());
+    assert!(!cfg.record_shortcut.is_empty());
+}
+
+#[test]
+fn test_shortcut_manager_helpers() {
+    // Check that helper methods don't panic
+    let _ = crate::shortcuts::ShortcutManager::is_shortcut_registered();
+    let _ = crate::shortcuts::ShortcutManager::is_autostart_enabled();
+    let _ = crate::shortcuts::ShortcutManager::is_running_as_appimage();
+}
+

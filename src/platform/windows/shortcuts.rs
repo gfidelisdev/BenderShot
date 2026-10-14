@@ -158,6 +158,45 @@ impl ShortcutManager {
             None
         }
     }
+
+    pub fn disable_gnome_screenshot_ui() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn restore_gnome_screenshot_ui() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn is_gnome_screenshot_ui_disabled() -> bool {
+        true
+    }
+
+    pub fn is_shortcut_registered() -> bool {
+        true
+    }
+
+    pub fn configure_autostart(_enable: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn is_autostart_enabled() -> bool {
+        true
+    }
+
+    pub fn start_daemon_if_not_running() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn is_running_as_appimage() -> bool {
+        false
+    }
+
+    pub fn integrate_appimage() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn send_notification(_summary: &str, _body: &str) {
+    }
 }
 
 fn notify_tray_daemon_reload() {

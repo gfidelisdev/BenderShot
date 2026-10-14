@@ -12,9 +12,9 @@ if [ ! -x "${BIN}" ]; then
     BIN="${HERE}/usr/bin/enhanced-shot"
 fi
 
-# Forward arguments or default to region capture
+# Forward arguments or run default (wizard on first run, region if configured)
 if [ $# -eq 0 ]; then
-    exec "${BIN}" region
+    exec "${BIN}"
 else
     exec "${BIN}" "$@"
 fi

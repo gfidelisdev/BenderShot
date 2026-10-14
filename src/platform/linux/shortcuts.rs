@@ -152,9 +152,7 @@ impl ShortcutManager {
                 .output();
         }
 
-        let exe = std::env::current_exe()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "bendershot".to_string());
+        let exe = get_executable_command();
         let cmd = format!("{} region", exe);
         let _ = Command::new("gsettings")
             .args([
@@ -187,6 +185,205 @@ impl ShortcutManager {
         } else {
             Err("Falha ao executar gsettings".into())
         }
+    }
+
+    /// Disables native GNOME screenshot UI to prevent conflict
+    pub fn disable_gnome_screenshot_ui() -> Result<(), String> {
+        let status = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "show-screenshot-ui", "[]"])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Falha ao desativar atalho nativo do GNOME".into())
+        }
+    }
+
+    /// Restores native GNOME screenshot UI
+    pub fn restore_gnome_screenshot_ui() -> Result<(), String> {
+        let status = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "show-screenshot-ui", "['Print']"])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Falha ao restaurar atalho nativo do GNOME".into())
+        }
+    }
+
+    /// Checks if GNOME native screenshot UI is disabled
+    pub fn is_gnome_screenshot_ui_disabled() -> bool {
+        if let Ok(output) = Command::new("gsettings")
+            .args(["get", "org.gnome.shell.keybindings", "show-screenshot-ui"])
+            .output()
+        {
+            if output.status.success() {
+                let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return val == "@as []" || val == "[]";
+            }
+        }
+        false
+    }
+
+    /// Checks if BenderShot is already registered in GNOME custom-keybindings
+    pub fn is_shortcut_registered() -> bool {
+        let custom_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot/";
+        if let Ok(output) = Command::new("gsettings")
+            .args(["get", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings"])
+            .output()
+        {
+            if output.status.success() {
+                let val = String::from_utf8_lossy(&output.stdout);
+                return val.contains(custom_path);
+            }
+        }
+        false
+    }
+
+    /// Configures autostart via systemd user service and XDG autostart desktop entry
+    pub fn configure_autostart(enable: bool) -> Result<(), String> {
+        if enable {
+            let _ = Command::new("systemctl")
+                .args(["--user", "enable", "bendershot.service"])
+                .output();
+        } else {
+            let _ = Command::new("systemctl")
+                .args(["--user", "disable", "bendershot.service"])
+                .output();
+        }
+
+        if let Some(base_dirs) = directories::BaseDirs::new() {
+            let autostart_dir = base_dirs.config_dir().join("autostart");
+            let desktop_file = autostart_dir.join("bendershot.desktop");
+
+            if enable {
+                let _ = std::fs::create_dir_all(&autostart_dir);
+                let exe_cmd = get_executable_command();
+                let content = format!(
+                    "[Desktop Entry]\nType=Application\nName=BenderShot\nComment=BenderShot daemon e atalhos na bandeja\nExec={} daemon\nIcon=bendershot\nTerminal=false\nCategories=Utility;\nX-GNOME-Autostart-enabled=true\n",
+                    exe_cmd
+                );
+                let _ = std::fs::write(desktop_file, content);
+            } else {
+                let _ = std::fs::remove_file(desktop_file);
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks if autostart is enabled
+    pub fn is_autostart_enabled() -> bool {
+        if let Some(base_dirs) = directories::BaseDirs::new() {
+            let desktop_file = base_dirs.config_dir().join("autostart").join("bendershot.desktop");
+            if desktop_file.exists() {
+                return true;
+            }
+        }
+        if let Ok(output) = Command::new("systemctl")
+            .args(["--user", "is-enabled", "bendershot.service"])
+            .output()
+        {
+            if output.status.success() {
+                let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return val == "enabled";
+            }
+        }
+        false
+    }
+
+    /// Starts the daemon service if not currently running
+    pub fn start_daemon_if_not_running() -> Result<(), String> {
+        let sys_out = Command::new("systemctl")
+            .args(["--user", "is-active", "bendershot.service"])
+            .output();
+        if let Ok(out) = sys_out {
+            if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "active" {
+                return Ok(());
+            }
+            if let Ok(start_out) = Command::new("systemctl")
+                .args(["--user", "start", "bendershot.service"])
+                .output()
+            {
+                if start_out.status.success() {
+                    return Ok(());
+                }
+            }
+        }
+
+        let exe = get_executable_command();
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let mut cmd = Command::new(exe);
+            cmd.arg("daemon")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .process_group(0);
+            cmd.spawn().map_err(|e| format!("Falha ao iniciar daemon: {}", e))?;
+        }
+        #[cfg(not(unix))]
+        {
+            Command::new(exe)
+                .arg("daemon")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| format!("Falha ao iniciar daemon: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// Checks if current process is running inside an AppImage
+    pub fn is_running_as_appimage() -> bool {
+        std::env::var("APPIMAGE").map(|s| !s.trim().is_empty()).unwrap_or(false)
+    }
+
+    /// Integrates AppImage with the desktop environment
+    pub fn integrate_appimage() -> Result<(), String> {
+        let appimage_path = std::env::var("APPIMAGE").map_err(|_| "Não está executando como AppImage".to_string())?;
+        let base_dirs = directories::BaseDirs::new().ok_or("Falha ao obter diretórios do usuário".to_string())?;
+        let data_dir = base_dirs.data_dir(); // ~/.local/share
+
+        let apps_dir = data_dir.join("applications");
+        let _ = std::fs::create_dir_all(&apps_dir);
+        let desktop_file = apps_dir.join("bendershot.desktop");
+
+        let desktop_content = format!(
+            "[Desktop Entry]\nName=BenderShot\nComment=Captura, gravação e anotação profissional de tela para Linux Wayland\nExec={} region\nIcon=bendershot\nTerminal=false\nType=Application\nCategories=Utility;Graphics;Photography;\nKeywords=screenshot;captura;print;tela;anotação;gravação;video;screencast;\nActions=Region;Full;Window;Record;Daemon;Settings;Wizard;\n\n[Desktop Action Region]\nName=Capturar Região\nExec={} region\n\n[Desktop Action Full]\nName=Capturar Tela Inteira\nExec={} full\n\n[Desktop Action Window]\nName=Capturar Janela Ativa\nExec={} window\n\n[Desktop Action Record]\nName=Gravar Vídeo da Tela\nExec={} record\n\n[Desktop Action Daemon]\nName=Iniciar no Painel Superior (Daemon)\nExec={} daemon\n\n[Desktop Action Settings]\nName=Configurações\nExec={} settings\n\n[Desktop Action Wizard]\nName=Assistente de Configuração\nExec={} wizard\n",
+            appimage_path, appimage_path, appimage_path, appimage_path, appimage_path, appimage_path, appimage_path, appimage_path
+        );
+        let _ = std::fs::write(&desktop_file, desktop_content);
+
+        let icon_dir = data_dir.join("icons").join("hicolor").join("scalable").join("apps");
+        let _ = std::fs::create_dir_all(&icon_dir);
+        static SVG_BYTES: &[u8] = include_bytes!("../../../packaging/assets/bendershot.svg");
+        let icon_file = icon_dir.join("bendershot.svg");
+        let _ = std::fs::write(icon_file, SVG_BYTES);
+
+        let home = base_dirs.home_dir();
+        let local_bin = home.join(".local").join("bin");
+        let _ = std::fs::create_dir_all(&local_bin);
+        let target_symlink = local_bin.join("bendershot");
+        let _ = std::fs::remove_file(&target_symlink);
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(&appimage_path, &target_symlink);
+
+        let _ = Command::new("update-desktop-database").arg(&apps_dir).output();
+        let _ = Command::new("gtk-update-icon-cache").args(["-f", "-t", data_dir.join("icons").join("hicolor").to_str().unwrap_or("")]).output();
+
+        Ok(())
+    }
+
+    /// Sends a desktop notification using notify-send
+    pub fn send_notification(summary: &str, body: &str) {
+        let _ = Command::new("notify-send")
+            .args(["-a", "BenderShot", "-i", "bendershot", summary, body])
+            .output();
     }
 
     /// Retrieves current BenderShot video recording keybinding
@@ -235,9 +432,7 @@ impl ShortcutManager {
                 .output();
         }
 
-        let exe = std::env::current_exe()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "bendershot".to_string());
+        let exe = get_executable_command();
         let cmd = format!("{} record", exe);
         let _ = Command::new("gsettings")
             .args([
@@ -271,6 +466,21 @@ impl ShortcutManager {
             Err("Falha ao executar gsettings para atalho de gravação".into())
         }
     }
+}
+
+pub fn get_executable_command() -> String {
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        if !appimage.trim().is_empty() {
+            return appimage;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let s = exe.to_string_lossy().to_string();
+        if !s.contains(".mount_") {
+            return s;
+        }
+    }
+    "bendershot".to_string()
 }
 
 fn normalize_shortcut(s: &str) -> String {

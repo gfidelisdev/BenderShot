@@ -72,19 +72,27 @@ install_files() {
         chmod 755 "${BIN_DIR}/${APP_NAME}"
         echo -e "  [✔] Binário: ${GREEN}${BIN_DIR}/${APP_NAME}${RESET}"
     fi
-    # Compatibility symlink for legacy bendershot commands
-    ln -sf "${APP_NAME}" "${BIN_DIR}/bendershot"
-    echo -e "  [✔] Alias de compatibilidade: ${GREEN}${BIN_DIR}/bendershot -> ${APP_NAME}${RESET}"
+    # Compatibility symlink for legacy enhanced-shot commands
+    ln -sf "${APP_NAME}" "${BIN_DIR}/enhanced-shot"
+    echo -e "  [✔] Alias de compatibilidade: ${GREEN}${BIN_DIR}/enhanced-shot -> ${APP_NAME}${RESET}"
 
     # 2. Desktop file
     if [ -f "${SRC_ASSETS}/bendershot.desktop" ]; then
         cp -f "${SRC_ASSETS}/bendershot.desktop" "${DESKTOP_DIR}/${APP_NAME}.desktop"
         chmod 644 "${DESKTOP_DIR}/${APP_NAME}.desktop"
         echo -e "  [✔] Lançador: ${GREEN}${DESKTOP_DIR}/${APP_NAME}.desktop${RESET}"
-    elif [ -f "${SRC_ASSETS}/bendershot.desktop" ]; then
-        cp -f "${SRC_ASSETS}/bendershot.desktop" "${DESKTOP_DIR}/${APP_NAME}.desktop"
-        chmod 644 "${DESKTOP_DIR}/${APP_NAME}.desktop"
-        echo -e "  [✔] Lançador: ${GREEN}${DESKTOP_DIR}/${APP_NAME}.desktop${RESET}"
+    fi
+
+    # 2.1 Autostart file
+    local AUTOSTART_DIR="${HOME}/.config/autostart"
+    if [ "${INSTALL_MODE}" = "system" ]; then
+        AUTOSTART_DIR="/etc/xdg/autostart"
+    fi
+    mkdir -p "${AUTOSTART_DIR}"
+    if [ -f "${SRC_ASSETS}/bendershot-autostart.desktop" ]; then
+        cp -f "${SRC_ASSETS}/bendershot-autostart.desktop" "${AUTOSTART_DIR}/${APP_NAME}.desktop"
+        chmod 644 "${AUTOSTART_DIR}/${APP_NAME}.desktop"
+        echo -e "  [✔] Inicialização Automática: ${GREEN}${AUTOSTART_DIR}/${APP_NAME}.desktop${RESET}"
     fi
 
     # 3. Icon
@@ -92,18 +100,10 @@ install_files() {
         cp -f "${SRC_ASSETS}/bendershot.svg" "${ICON_DIR}/${APP_NAME}.svg"
         chmod 644 "${ICON_DIR}/${APP_NAME}.svg"
         echo -e "  [✔] Ícone: ${GREEN}${ICON_DIR}/${APP_NAME}.svg${RESET}"
-    elif [ -f "${SRC_ASSETS}/bendershot.svg" ]; then
-        cp -f "${SRC_ASSETS}/bendershot.svg" "${ICON_DIR}/${APP_NAME}.svg"
-        chmod 644 "${ICON_DIR}/${APP_NAME}.svg"
-        echo -e "  [✔] Ícone: ${GREEN}${ICON_DIR}/${APP_NAME}.svg${RESET}"
     fi
 
     # 4. Systemd unit
     if [ -f "${SRC_ASSETS}/bendershot.service" ]; then
-        cp -f "${SRC_ASSETS}/bendershot.service" "${SERVICE_DIR}/${APP_NAME}.service"
-        chmod 644 "${SERVICE_DIR}/${APP_NAME}.service"
-        echo -e "  [✔] Serviço Daemon: ${GREEN}${SERVICE_DIR}/${APP_NAME}.service${RESET}"
-    elif [ -f "${SRC_ASSETS}/bendershot.service" ]; then
         cp -f "${SRC_ASSETS}/bendershot.service" "${SERVICE_DIR}/${APP_NAME}.service"
         chmod 644 "${SERVICE_DIR}/${APP_NAME}.service"
         echo -e "  [✔] Serviço Daemon: ${GREEN}${SERVICE_DIR}/${APP_NAME}.service${RESET}"
@@ -225,10 +225,10 @@ setup_paths
 echo "Destino da instalação: ${GREEN}${BIN_DIR}${RESET} (${INSTALL_MODE})"
 echo ""
 echo -e "${BOLD}Selecione o modo de operação desejado:${RESET}"
-echo "  1) [Recomendado] Substituir a tecla PrintScreen padrão pelo Enhanced Shot"
+echo "  1) [Recomendado] Substituir a tecla PrintScreen pelo BenderShot e iniciar Daemon na bandeja"
 echo "  2) Configurar um atalho de teclado personalizado (ex: <Ctrl><Shift>Print ou <Ctrl><Alt>s)"
-echo "  3) Executar como Daemon no painel da bandeja (ícone na barra superior do GNOME/KDE)"
-echo "  4) Apenas instalar (lançamento pelo menu de aplicativos ou linha de comando)"
+echo "  3) Executar apenas como Daemon no painel da bandeja (ícone na barra superior do GNOME/KDE)"
+echo "  4) Apenas instalar arquivos (sem modificar atalhos ou iniciar daemon)"
 echo "  5) Cancelar instalação"
 echo ""
 
@@ -238,7 +238,8 @@ CHOICE="${CHOICE:-1}"
 case "${CHOICE}" in
     1)
         install_files
-        configure_gnome_shortcut "Print" "Enhanced Shot Captura"
+        configure_gnome_shortcut "Print" "BenderShot Captura"
+        configure_daemon
         ;;
     2)
         echo ""
@@ -249,7 +250,8 @@ case "${CHOICE}" in
         read -rp "Digite a combinação de teclas desejada: " USER_KEY
         if [ -n "${USER_KEY}" ]; then
             install_files
-            configure_gnome_shortcut "${USER_KEY}" "Enhanced Shot Captura"
+            configure_gnome_shortcut "${USER_KEY}" "BenderShot Captura"
+            configure_daemon
         else
             echo "Nenhum atalho digitado. Instalando apenas lançadores."
             install_files

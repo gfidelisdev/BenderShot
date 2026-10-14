@@ -16,13 +16,65 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Cli::parse();
-    let command = args.command.unwrap_or(Commands::Region);
+    let command = match args.command {
+        Some(cmd) => cmd,
+        None => {
+            if !bendershot::config::AppConfig::is_setup_completed() {
+                Commands::Wizard
+            } else {
+                Commands::Region
+            }
+        }
+    };
 
     match command {
         Commands::Daemon => {
             #[cfg(target_os = "linux")]
             println!("BenderShot daemon iniciado. Ícone ativo no painel superior.");
             indicator::run_indicator().await?;
+        }
+        Commands::Wizard => {
+            ui::run_wizard_window().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        }
+        Commands::AutoSetup => {
+            println!("Executando configuração automática do BenderShot...");
+            let mut ok = true;
+            if let Err(e) = bendershot::shortcuts::ShortcutManager::set_binding("Print") {
+                eprintln!("Aviso: Falha ao configurar atalho de captura: {}", e);
+                ok = false;
+            } else {
+                println!("✓ Tecla PrintScreen vinculada à captura do BenderShot.");
+            }
+            if let Err(e) = bendershot::shortcuts::ShortcutManager::set_record_binding("<Ctrl><Shift>R") {
+                eprintln!("Aviso: Falha ao configurar atalho de gravação: {}", e);
+            } else {
+                println!("✓ Atalho de vídeo <Ctrl><Shift>R configurado.");
+            }
+            if let Err(e) = bendershot::shortcuts::ShortcutManager::configure_autostart(true) {
+                eprintln!("Aviso: Falha ao configurar autostart: {}", e);
+            } else {
+                println!("✓ Inicialização automática (autostart) configurada.");
+            }
+            if bendershot::shortcuts::ShortcutManager::is_running_as_appimage() {
+                if let Err(e) = bendershot::shortcuts::ShortcutManager::integrate_appimage() {
+                    eprintln!("Aviso: Falha na integração do AppImage: {}", e);
+                } else {
+                    println!("✓ AppImage integrado ao menu do sistema.");
+                }
+            }
+            if let Err(e) = bendershot::shortcuts::ShortcutManager::start_daemon_if_not_running() {
+                eprintln!("Aviso: Falha ao iniciar daemon: {}", e);
+            } else {
+                println!("✓ Daemon do BenderShot iniciado.");
+            }
+            bendershot::config::AppConfig::mark_setup_completed();
+            bendershot::shortcuts::ShortcutManager::send_notification(
+                "BenderShot Ativo",
+                "Configuração concluída! Pressione PrintScreen para capturar a tela."
+            );
+            if ok {
+                println!("✓ BenderShot configurado e pronto para uso!");
+            }
         }
         Commands::Edit { path } => {
             let image = capture::CaptureBackend::load_image_from_path(&path)?;
