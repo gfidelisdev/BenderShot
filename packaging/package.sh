@@ -11,7 +11,7 @@ TARGET_DIR="${ROOT_DIR}/target/release"
 DIST_DIR="${SCRIPT_DIR}/dist"
 ASSETS_DIR="${SCRIPT_DIR}/assets"
 
-VERSION="0.1.3"
+VERSION="0.1.4"
 BIN_NAME="bendershot"
 
 echo "==> Building release binary with Cargo..."

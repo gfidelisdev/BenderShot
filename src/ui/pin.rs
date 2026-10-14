@@ -57,13 +57,18 @@ pub fn run_pin_window(image: RgbaImage) -> Result<(), eframe::Error> {
     let width = (image.width() as f32).max(200.0);
     let height = (image.height() as f32).max(150.0);
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("BenderShot - Pinned")
+        .with_always_on_top()
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_inner_size([width, height]);
+    if let Some(icon) = crate::ui::load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("BenderShot - Pinned")
-            .with_always_on_top()
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_inner_size([width, height]),
+        viewport,
         ..Default::default()
     };
 

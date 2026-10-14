@@ -2467,11 +2467,16 @@ pub fn run_editor(image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Re
     let width = (image.width() as f32).clamp(700.0, 1600.0) + 220.0; // Extra room for layers panel
     let height = (image.height() as f32).clamp(500.0, 1000.0) + 100.0;
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("BenderShot")
+        .with_inner_size([width, height])
+        .with_min_inner_size([700.0, 480.0]);
+    if let Some(icon) = crate::ui::load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("BenderShot")
-            .with_inner_size([width, height])
-            .with_min_inner_size([700.0, 480.0]),
+        viewport,
         ..Default::default()
     };
 
@@ -2490,11 +2495,16 @@ pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Er
     let width = (initial_frame.width() as f32).clamp(700.0, 1600.0) + 220.0;
     let height = (initial_frame.height() as f32).clamp(500.0, 1000.0) + 160.0;
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("BenderShot - Editor de Vídeo")
+        .with_inner_size([width, height])
+        .with_min_inner_size([750.0, 520.0]);
+    if let Some(icon) = crate::ui::load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("BenderShot - Editor de Vídeo")
-            .with_inner_size([width, height])
-            .with_min_inner_size([750.0, 520.0]),
+        viewport,
         ..Default::default()
     };
 

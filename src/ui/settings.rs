@@ -322,11 +322,16 @@ impl eframe::App for SettingsApp {
 }
 
 pub fn run_settings_window() -> Result<(), eframe::Error> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("BenderShot - Configurações")
+        .with_inner_size([540.0, 480.0])
+        .with_min_inner_size([480.0, 420.0]);
+    if let Some(icon) = crate::ui::load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("BenderShot - Configurações")
-            .with_inner_size([540.0, 480.0])
-            .with_min_inner_size([480.0, 420.0]),
+        viewport,
         ..Default::default()
     };
 
