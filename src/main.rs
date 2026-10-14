@@ -38,6 +38,9 @@ async fn main() -> Result<()> {
         }
         Commands::AutoSetup => {
             println!("Executando configuração automática do BenderShot...");
+            #[cfg(target_os = "linux")]
+            bendershot::platform::linux::capture::ensure_portal_permissions();
+
             let mut ok = true;
             if let Err(e) = bendershot::shortcuts::ShortcutManager::set_binding("Print") {
                 eprintln!("Aviso: Falha ao configurar atalho de captura: {}", e);
@@ -124,6 +127,9 @@ fn open_editor_session(image: image::RgbaImage) -> Result<()> {
     if let Ok(pinned_image) = pin_rx.try_recv() {
         let _ = ui::run_pin_window(pinned_image);
     }
+
+    #[cfg(target_os = "linux")]
+    bendershot::platform::linux::capture::remove_capture_pid_file();
 
     Ok(())
 }

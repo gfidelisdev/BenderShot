@@ -113,6 +113,29 @@ fn spawn_wizard() {
 pub async fn run_indicator() -> anyhow::Result<()> {
     tracing::info!("Starting BenderShot top-panel indicator service...");
 
+    // Single-instance check for daemon
+    let my_pid = std::process::id();
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let daemon_pid_file = runtime_dir.join("bendershot-daemon.pid");
+
+    if let Ok(content) = std::fs::read_to_string(&daemon_pid_file) {
+        if let Ok(pid) = content.trim().parse::<u32>() {
+            if pid != my_pid && crate::platform::linux::capture::is_process_alive(pid) {
+                tracing::info!(
+                    "BenderShot daemon já está ativo com PID {}. Encerrando instância redundante.",
+                    pid
+                );
+                return Ok(());
+            }
+        }
+    }
+    let _ = std::fs::write(&daemon_pid_file, my_pid.to_string());
+
+    // Pre-authorize XDG Portal screenshot permissions
+    crate::platform::linux::capture::ensure_portal_permissions();
+
     // Auto-configure shortcuts on first run of daemon if not already completed
     if !crate::config::AppConfig::is_setup_completed() {
         tracing::info!("First run of BenderShot daemon detected. Auto-configuring GNOME shortcuts...");
@@ -157,5 +180,6 @@ pub async fn run_indicator() -> anyhow::Result<()> {
     }
 
     tracing::info!("Exiting indicator service.");
+    let _ = std::fs::remove_file(daemon_pid_file);
     Ok(())
 }

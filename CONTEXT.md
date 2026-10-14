@@ -157,3 +157,18 @@ _Avoid_: Output directory, dump folder
 **Clipboard Pipeline**:
 The Wayland clipboard export channel delivering rasterized PNG byte buffers.
 _Avoid_: Copy paste handler, clipboard transfer
+
+### Lifecycle, System Integration & Packaging
+
+**Portal Permission Pre-Authorization**:
+The proactive registration of `bendershot` authorization (`yes`) in `org.freedesktop.impl.portal.PermissionStore` table `screenshot`, preventing Wayland compositors (Mutter/GNOME Shell) from rejecting un-focused background shortcut invocations with access dialog errors.
+_Avoid_: Force grant, hacky permission, bypass prompt
+
+**Capture Retry Loop**:
+The resilient, bounded attempt cycle (up to 3 attempts with 5-second timeouts and backoffs) ensuring transient D-Bus latency or portal startup races are handled transparently on the first user key press.
+_Avoid_: Polling loop, retry spin
+
+**Local Build Script**:
+The root automation entry point (`./build_local.sh`) that compiles release/debug binaries, runs test validation, and packages native `.rpm`, `.deb`, `.AppImage`, and `.tar.gz` bundles into `packaging/dist`.
+_Avoid_: Compile helper, manual package script
+

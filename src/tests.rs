@@ -499,5 +499,35 @@ fn test_post_creation_selection_auto_switch() {
     assert_eq!(app.selected_item_index, Some(3));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn test_linux_capture_process_and_pid_lifecycle() {
+    use crate::platform::linux::capture::{is_process_alive, cleanup_stale_capture_processes, remove_capture_pid_file, ensure_portal_permissions};
+
+    // Current process should be alive
+    let my_pid = std::process::id();
+    assert!(is_process_alive(my_pid));
+
+    // A ridiculous PID that cannot exist should not be alive
+    assert!(!is_process_alive(999_999_999));
+
+    // Calling ensure_portal_permissions should run cleanly without panic
+    ensure_portal_permissions();
+
+    // Cleanup and PID file writing
+    cleanup_stale_capture_processes();
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let pid_file = runtime_dir.join("bendershot-capture.pid");
+    assert!(pid_file.exists());
+
+    let content = std::fs::read_to_string(&pid_file).unwrap();
+    assert_eq!(content.trim(), my_pid.to_string());
+
+    remove_capture_pid_file();
+    assert!(!pid_file.exists());
+}
+
 
 

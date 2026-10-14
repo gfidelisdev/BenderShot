@@ -161,6 +161,11 @@ configure_gnome_shortcut() {
     gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path} command "${command_to_run}"
     gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path} binding "${keybinding}"
 
+    # Pre-authorize XDG Desktop Portal screenshot permissions
+    if command -v busctl &>/dev/null; then
+        busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore org.freedesktop.impl.portal.PermissionStore SetPermission sbssas screenshot true screenshot bendershot 1 yes 2>/dev/null || true
+    fi
+
     echo -e "  ${GREEN}Atalho registrado com sucesso no GNOME!${RESET}"
 }
 

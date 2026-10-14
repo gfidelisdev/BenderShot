@@ -11,7 +11,7 @@ TARGET_DIR="${ROOT_DIR}/target/release"
 DIST_DIR="${SCRIPT_DIR}/dist"
 ASSETS_DIR="${SCRIPT_DIR}/assets"
 
-VERSION="0.1.4"
+VERSION="${VERSION:-$(grep -m1 '^version' "${ROOT_DIR}/Cargo.toml" | cut -d '"' -f2)}"
 BIN_NAME="bendershot"
 
 echo "==> Building release binary with Cargo..."
@@ -96,7 +96,7 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
         systemctl --user -M "${TARGET_USER}@" daemon-reload 2>/dev/null || true
         systemctl --user -M "${TARGET_USER}@" reset-failed bendershot.service 2>/dev/null || true
         systemctl --user -M "${TARGET_USER}@" enable --now bendershot.service 2>/dev/null || true
-        su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus; /usr/bin/bendershot auto-setup" 2>/dev/null || true
+        su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus; busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore org.freedesktop.impl.portal.PermissionStore SetPermission sbssas screenshot true screenshot bendershot 1 yes 2>/dev/null || true; /usr/bin/bendershot auto-setup" 2>/dev/null || true
         systemctl --user -M "${TARGET_USER}@" restart org.gnome.SettingsDaemon.MediaKeys.target 2>/dev/null || true
     fi
 fi

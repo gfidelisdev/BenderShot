@@ -127,6 +127,9 @@ impl ShortcutManager {
     pub fn set_binding(new_binding: &str) -> Result<(), String> {
         let custom_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot/";
 
+        // Pre-authorize XDG Portal permissions so background shortcut execution doesn't prompt access dialog
+        crate::platform::linux::capture::ensure_portal_permissions();
+
         // 1. Clean up legacy bindings (e.g. enhanced-shot) and conflicting duplicates
         cleanup_legacy_keybindings();
         unbind_conflicting_custom_shortcuts(new_binding, custom_path);
@@ -309,6 +312,20 @@ impl ShortcutManager {
 
     /// Starts the daemon service if not currently running
     pub fn start_daemon_if_not_running() -> Result<(), String> {
+        crate::platform::linux::capture::ensure_portal_permissions();
+
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let daemon_pid_file = runtime_dir.join("bendershot-daemon.pid");
+        if let Ok(content) = std::fs::read_to_string(&daemon_pid_file) {
+            if let Ok(pid) = content.trim().parse::<u32>() {
+                if crate::platform::linux::capture::is_process_alive(pid) {
+                    return Ok(());
+                }
+            }
+        }
+
         let sys_out = Command::new("systemctl")
             .args(["--user", "is-active", "bendershot.service"])
             .output();

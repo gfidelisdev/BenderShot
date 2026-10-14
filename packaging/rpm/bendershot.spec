@@ -65,7 +65,7 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
         systemctl --user -M "${TARGET_USER}@" daemon-reload &>/dev/null || :
         systemctl --user -M "${TARGET_USER}@" reset-failed bendershot.service &>/dev/null || :
         systemctl --user -M "${TARGET_USER}@" enable --now bendershot.service &>/dev/null || :
-        su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus; %{_bindir}/bendershot auto-setup" &>/dev/null || :
+        su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus; busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore org.freedesktop.impl.portal.PermissionStore SetPermission sbssas screenshot true screenshot bendershot 1 yes 2>/dev/null || true; %{_bindir}/bendershot auto-setup" &>/dev/null || :
         systemctl --user -M "${TARGET_USER}@" restart org.gnome.SettingsDaemon.MediaKeys.target &>/dev/null || :
     fi
 fi
