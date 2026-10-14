@@ -91,6 +91,7 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
         systemctl --user -M "${TARGET_USER}@" reset-failed bendershot.service 2>/dev/null || true
         systemctl --user -M "${TARGET_USER}@" enable --now bendershot.service 2>/dev/null || true
         su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus; /usr/bin/bendershot auto-setup" 2>/dev/null || true
+        systemctl --user -M "${TARGET_USER}@" restart org.gnome.SettingsDaemon.MediaKeys.target 2>/dev/null || true
     fi
 fi
 exit 0
