@@ -74,15 +74,23 @@ fi
 
 # Enable systemd user service globally for all desktop logins
 if [ -x /usr/bin/systemctl ]; then
+    /usr/bin/systemctl --global daemon-reload 2>/dev/null || true
     /usr/bin/systemctl --global enable bendershot.service 2>/dev/null || true
 fi
 
-# If installed via sudo by active desktop user, configure shortcuts and start daemon
-if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-    SUDO_UID=$(id -u "$SUDO_USER" 2>/dev/null || true)
-    if [ -n "$SUDO_UID" ]; then
-        systemctl --user -M "${SUDO_USER}@" enable --now bendershot.service 2>/dev/null || true
-        su - "$SUDO_USER" -c "XDG_RUNTIME_DIR=/run/user/${SUDO_UID} /usr/bin/bendershot auto-setup" 2>/dev/null || true
+# Detect target desktop user (either via sudo or active graphical session)
+TARGET_USER="${SUDO_USER:-}"
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+    TARGET_USER=$(loginctl list-users --no-legend 2>/dev/null | awk '$2 != "root" {print $2; exit}' || true)
+fi
+
+if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+    TARGET_UID=$(id -u "$TARGET_USER" 2>/dev/null || true)
+    if [ -n "$TARGET_UID" ]; then
+        systemctl --user -M "${TARGET_USER}@" daemon-reload 2>/dev/null || true
+        systemctl --user -M "${TARGET_USER}@" reset-failed bendershot.service 2>/dev/null || true
+        systemctl --user -M "${TARGET_USER}@" enable --now bendershot.service 2>/dev/null || true
+        su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus; /usr/bin/bendershot auto-setup" 2>/dev/null || true
     fi
 fi
 exit 0
@@ -102,9 +110,13 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     if [ -x /usr/bin/systemctl ]; then
         /usr/bin/systemctl --global disable bendershot.service 2>/dev/null || true
     fi
-    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-        systemctl --user -M "${SUDO_USER}@" stop bendershot.service 2>/dev/null || true
-        systemctl --user -M "${SUDO_USER}@" disable bendershot.service 2>/dev/null || true
+    TARGET_USER="${SUDO_USER:-}"
+    if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+        TARGET_USER=$(loginctl list-users --no-legend 2>/dev/null | awk '$2 != "root" {print $2; exit}' || true)
+    fi
+    if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+        systemctl --user -M "${TARGET_USER}@" stop bendershot.service 2>/dev/null || true
+        systemctl --user -M "${TARGET_USER}@" disable bendershot.service 2>/dev/null || true
     fi
 fi
 exit 0

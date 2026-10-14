@@ -127,6 +127,10 @@ impl ShortcutManager {
     pub fn set_binding(new_binding: &str) -> Result<(), String> {
         let custom_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot/";
 
+        // 1. Clean up legacy bindings (e.g. enhanced-shot) and conflicting duplicates
+        cleanup_legacy_keybindings();
+        unbind_conflicting_custom_shortcuts(new_binding, custom_path);
+
         if new_binding == "Print" {
             // Disable GNOME native UI to prevent conflict
             let _ = Command::new("gsettings")
@@ -415,6 +419,9 @@ impl ShortcutManager {
     pub fn set_record_binding(new_binding: &str) -> Result<(), String> {
         let custom_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot-record/";
 
+        cleanup_legacy_keybindings();
+        unbind_conflicting_custom_shortcuts(new_binding, custom_path);
+
         let current_bindings = Command::new("gsettings")
             .args(["get", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings"])
             .output()
@@ -481,6 +488,91 @@ pub fn get_executable_command() -> String {
         }
     }
     "bendershot".to_string()
+}
+
+fn cleanup_legacy_keybindings() {
+    let legacy_paths = [
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/enhanced-shot/",
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/enhanced-shot-record/",
+    ];
+
+    if let Ok(output) = Command::new("gsettings")
+        .args(["get", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings"])
+        .output()
+    {
+        if output.status.success() {
+            let mut current = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let mut changed = false;
+
+            for legacy in legacy_paths {
+                if current.contains(legacy) {
+                    let _ = Command::new("gsettings")
+                        .args(["reset", &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", legacy), "binding"])
+                        .output();
+                    let _ = Command::new("gsettings")
+                        .args(["reset", &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", legacy), "command"])
+                        .output();
+                    let _ = Command::new("gsettings")
+                        .args(["reset", &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", legacy), "name"])
+                        .output();
+
+                    current = current.replace(&format!("'{}', ", legacy), "")
+                        .replace(&format!(", '{}'", legacy), "")
+                        .replace(&format!("'{}'", legacy), "");
+                    changed = true;
+                }
+            }
+
+            if changed {
+                if current.trim() == "[]" || current.trim().is_empty() {
+                    current = "@as []".to_string();
+                }
+                let _ = Command::new("gsettings")
+                    .args(["set", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings", &current])
+                    .output();
+            }
+        }
+    }
+}
+
+fn unbind_conflicting_custom_shortcuts(candidate_binding: &str, current_slot: &str) {
+    let norm_candidate = normalize_shortcut(candidate_binding);
+    if norm_candidate.is_empty() {
+        return;
+    }
+
+    if let Ok(output) = Command::new("gsettings")
+        .args(["get", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings"])
+        .output()
+    {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for path in text.split('\'').filter(|s| s.starts_with('/')) {
+                if path == current_slot {
+                    continue;
+                }
+                if let Ok(b_out) = Command::new("gsettings")
+                    .args([
+                        "get",
+                        &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", path),
+                        "binding",
+                    ])
+                    .output()
+                {
+                    let b_val = String::from_utf8_lossy(&b_out.stdout).trim().trim_matches('\'').to_string();
+                    if normalize_shortcut(&b_val) == norm_candidate {
+                        let _ = Command::new("gsettings")
+                            .args([
+                                "reset",
+                                &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", path),
+                                "binding",
+                            ])
+                            .output();
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn normalize_shortcut(s: &str) -> String {
