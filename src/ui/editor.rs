@@ -63,7 +63,7 @@ pub struct EditorApp {
     redo_stack: Vec<EditorStateSnapshot>,
     texture: Option<egui::TextureHandle>,
     scene: Scene,
-    current_tool: ToolMode,
+    pub current_tool: ToolMode,
     current_color: [u8; 4],
     stroke_width: f32,
     drag_start: Option<Pos2>,
@@ -79,7 +79,7 @@ pub struct EditorApp {
     candidate_record_shortcut: String,
     shortcut_conflict: Option<String>,
     record_shortcut_conflict: Option<String>,
-    selected_item_index: Option<usize>,
+    pub selected_item_index: Option<usize>,
     theme_mode: AdwaitaThemeMode,
     selected_font_family: FontFamily,
     selected_text_bg: TextBackground,
@@ -101,6 +101,9 @@ pub struct EditorApp {
     polygon_is_freeform: bool,
     polygon_freeform_points: Vec<[f32; 2]>,
     bezier_is_arrow: bool,
+    pub zoom_scale: f32,
+    pub pan_offset: Vec2,
+    pub auto_fit: bool,
 }
 
 impl EditorApp {
@@ -149,6 +152,78 @@ impl EditorApp {
             polygon_is_freeform: false,
             polygon_freeform_points: Vec::new(),
             bezier_is_arrow: false,
+            zoom_scale: 1.0,
+            pan_offset: Vec2::ZERO,
+            auto_fit: true,
+        }
+    }
+
+    pub fn fit_to_viewport(&mut self, viewport_size: Vec2) {
+        let img_w = self.base_image.width() as f32;
+        let img_h = self.base_image.height() as f32;
+        if img_w <= 0.0 || img_h <= 0.0 || viewport_size.x <= 0.0 || viewport_size.y <= 0.0 {
+            return;
+        }
+        let fit_scale = (viewport_size.x / img_w).min(viewport_size.y / img_h).min(1.0);
+        self.zoom_scale = fit_scale;
+        self.pan_offset = Vec2::new(
+            (viewport_size.x - img_w * fit_scale) * 0.5,
+            (viewport_size.y - img_h * fit_scale) * 0.5,
+        );
+        self.auto_fit = true;
+    }
+
+    pub fn set_zoom_100(&mut self, viewport_rect: Rect) {
+        let img_w = self.base_image.width() as f32;
+        let img_h = self.base_image.height() as f32;
+        self.zoom_scale = 1.0;
+        self.pan_offset = Vec2::new(
+            (viewport_rect.width() - img_w) * 0.5,
+            (viewport_rect.height() - img_h) * 0.5,
+        );
+        self.auto_fit = false;
+    }
+
+    pub fn zoom_by(&mut self, factor: f32, focal_screen_pos: Pos2, viewport_origin: Pos2) {
+        let img_w = self.base_image.width() as f32;
+        let img_h = self.base_image.height() as f32;
+        if img_w <= 0.0 || img_h <= 0.0 {
+            return;
+        }
+        let old_scale = self.zoom_scale;
+        let new_scale = (old_scale * factor).clamp(0.1, 20.0);
+        if (new_scale - old_scale).abs() < 0.0001 {
+            return;
+        }
+
+        let img_x = (focal_screen_pos.x - viewport_origin.x - self.pan_offset.x) / old_scale;
+        let img_y = (focal_screen_pos.y - viewport_origin.y - self.pan_offset.y) / old_scale;
+        self.zoom_scale = new_scale;
+        self.pan_offset = Vec2::new(
+            focal_screen_pos.x - viewport_origin.x - img_x * new_scale,
+            focal_screen_pos.y - viewport_origin.y - img_y * new_scale,
+        );
+        self.auto_fit = false;
+    }
+
+    pub fn clamp_pan(&mut self, viewport_size: Vec2) {
+        let img_w = self.base_image.width() as f32;
+        let img_h = self.base_image.height() as f32;
+        let img_screen_w = img_w * self.zoom_scale;
+        let img_screen_h = img_h * self.zoom_scale;
+        let margin_x = 100.0_f32.min(img_screen_w * 0.5).min(viewport_size.x * 0.5);
+        let margin_y = 100.0_f32.min(img_screen_h * 0.5).min(viewport_size.y * 0.5);
+
+        let min_pan_x = margin_x - img_screen_w;
+        let max_pan_x = viewport_size.x - margin_x;
+        let min_pan_y = margin_y - img_screen_h;
+        let max_pan_y = viewport_size.y - margin_y;
+
+        if min_pan_x <= max_pan_x {
+            self.pan_offset.x = self.pan_offset.x.clamp(min_pan_x, max_pan_x);
+        }
+        if min_pan_y <= max_pan_y {
+            self.pan_offset.y = self.pan_offset.y.clamp(min_pan_y, max_pan_y);
         }
     }
 
@@ -223,12 +298,13 @@ impl EditorApp {
                     bg_style: self.selected_text_bg,
                 });
                 self.selected_item_index = Some(self.scene.items.len() - 1);
-                self.set_status("Texto inserido");
+                self.current_tool = ToolMode::Select;
+                self.set_status("Texto inserido (modo Seleção ativo)");
             }
         }
     }
 
-    fn finish_current_shape(&mut self, start: Pos2, mut end: Pos2, image_rect: Rect, is_ctrl_constrained: bool) -> bool {
+    pub fn finish_current_shape(&mut self, start: Pos2, mut end: Pos2, image_rect: Rect, is_ctrl_constrained: bool) -> bool {
         let to_image_coords = |p: Pos2| -> [f32; 2] {
             let x = (p.x - image_rect.min.x).clamp(0.0, image_rect.width());
             let y = (p.y - image_rect.min.y).clamp(0.0, image_rect.height());
@@ -256,6 +332,8 @@ impl EditorApp {
                         width: self.stroke_width,
                     });
                     self.selected_item_index = Some(self.scene.items.len() - 1);
+                    self.current_tool = ToolMode::Select;
+                    self.set_status("Seta inserida (modo Seleção ativo)");
                 }
             }
             ToolMode::Rectangle | ToolMode::Polygon => {
@@ -271,6 +349,7 @@ impl EditorApp {
                             width: self.stroke_width,
                             fill: None,
                         });
+                        self.set_status("Retângulo inserido (modo Seleção ativo)");
                     } else {
                         let cx = (min[0] + max[0]) / 2.0;
                         let cy = (min[1] + max[1]) / 2.0;
@@ -296,8 +375,10 @@ impl EditorApp {
                             width: self.stroke_width,
                             fill: None,
                         });
+                        self.set_status(format!("Polígono de {} lados inserido (modo Seleção ativo)", sides));
                     }
                     self.selected_item_index = Some(self.scene.items.len() - 1);
+                    self.current_tool = ToolMode::Select;
                 }
             }
             ToolMode::Bezier => {
@@ -316,6 +397,8 @@ impl EditorApp {
                         is_arrow: self.bezier_is_arrow,
                     });
                     self.selected_item_index = Some(self.scene.items.len() - 1);
+                    self.current_tool = ToolMode::Select;
+                    self.set_status("Curva Bézier inserida (modo Seleção ativo)");
                 }
             }
             ToolMode::Ellipse => {
@@ -331,6 +414,8 @@ impl EditorApp {
                         fill: None,
                     });
                     self.selected_item_index = Some(self.scene.items.len() - 1);
+                    self.current_tool = ToolMode::Select;
+                    self.set_status("Elipse inserida (modo Seleção ativo)");
                 }
             }
             ToolMode::Highlight => {
@@ -344,6 +429,8 @@ impl EditorApp {
                         color: self.current_color,
                     });
                     self.selected_item_index = Some(self.scene.items.len() - 1);
+                    self.current_tool = ToolMode::Select;
+                    self.set_status("Grifo retangular inserido (modo Seleção ativo)");
                 }
             }
             ToolMode::Blur => {
@@ -415,6 +502,7 @@ impl EditorApp {
                 self.texture = None;
                 self.selected_item_index = None;
                 self.current_tool = ToolMode::Select;
+                self.auto_fit = true;
                 self.set_status("Imagem recortada com sucesso");
                 return true;
             }
@@ -435,7 +523,8 @@ impl EditorApp {
                 fill: None,
             });
             self.selected_item_index = Some(self.scene.items.len() - 1);
-            self.set_status(format!("Polígono de {} vértices adicionado", sides));
+            self.current_tool = ToolMode::Select;
+            self.set_status(format!("Polígono de {} vértices adicionado (modo Seleção ativo)", sides));
         } else {
             self.polygon_freeform_points.clear();
         }
@@ -487,6 +576,7 @@ impl EditorApp {
                         self.scene.clear();
                         self.crop_selection = None;
                         self.selected_item_index = None;
+                        self.auto_fit = true;
                         self.set_status(format!("Imagem carregada: {}", path.file_name().unwrap_or_default().to_string_lossy()));
                     } else {
                         self.set_status("Falha ao abrir imagem selecionada.");
@@ -525,7 +615,15 @@ impl eframe::App for EditorApp {
                 [w as usize, h as usize],
                 self.base_image.as_raw(),
             );
-            self.texture = Some(ctx.load_texture("screenshot", color_image, egui::TextureOptions::LINEAR));
+            self.texture = Some(ctx.load_texture(
+                "screenshot",
+                color_image,
+                egui::TextureOptions {
+                    magnification: egui::TextureFilter::Nearest,
+                    minification: egui::TextureFilter::Linear,
+                    ..Default::default()
+                },
+            ));
         }
 
         // Handle interactive key sequence recording when in Settings modal
@@ -679,9 +777,40 @@ impl eframe::App for EditorApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
-        }
 
-        let is_ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+            let is_ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+            if is_ctrl && ctx.input(|i| i.key_pressed(egui::Key::Num0)) {
+                self.auto_fit = true;
+                self.set_status("Ajustado à janela");
+            }
+            if is_ctrl && ctx.input(|i| i.key_pressed(egui::Key::Num1)) {
+                self.zoom_scale = 1.0;
+                self.auto_fit = false;
+                self.set_status("Zoom: 100% (1:1)");
+            }
+            if is_ctrl && (ctx.input(|i| i.key_pressed(egui::Key::Plus)) || ctx.input(|i| i.key_pressed(egui::Key::Equals))) {
+                self.zoom_scale = (self.zoom_scale * 1.15).clamp(0.1, 20.0);
+                self.auto_fit = false;
+                self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
+            }
+            if is_ctrl && ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
+                self.zoom_scale = (self.zoom_scale / 1.15).clamp(0.1, 20.0);
+                self.auto_fit = false;
+                self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
+            }
+            if self.active_inline_text.is_none() && !is_ctrl {
+                if ctx.input(|i| i.key_pressed(egui::Key::H)) {
+                    self.commit_inline_text();
+                    self.current_tool = ToolMode::Pan;
+                    self.set_status("Ferramenta Mão (Pan) selecionada");
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::V)) {
+                    self.commit_inline_text();
+                    self.current_tool = ToolMode::Select;
+                    self.set_status("Ferramenta Seleção ativada");
+                }
+            }
+        }
 
         // Header Background
         let header_bg = match self.theme_mode {
@@ -711,6 +840,7 @@ impl eframe::App for EditorApp {
                         };
 
                         tool_btn(ToolMode::Select, "↖ Sel");
+                        tool_btn(ToolMode::Pan, "✋ Pan");
                         tool_btn(ToolMode::Freehand, "✏ Caneta");
                         tool_btn(ToolMode::FreehandHighlighter, "🖊 Grifador");
                         tool_btn(ToolMode::Bezier, "➰ Bézier");
@@ -1316,15 +1446,88 @@ impl eframe::App for EditorApp {
             let img_w = self.base_image.width() as f32;
             let img_h = self.base_image.height() as f32;
 
-            if img_w <= 0.0 || img_h <= 0.0 {
+            if img_w <= 0.0 || img_h <= 0.0 || available_size.x <= 10.0 || available_size.y <= 10.0 {
                 return;
             }
 
-            let scale = (available_size.x / img_w).min(available_size.y / img_h).min(1.0);
-            let display_size = Vec2::new(img_w * scale, img_h * scale);
+            let (viewport_rect, response) = ui.allocate_exact_size(available_size, egui::Sense::click_and_drag());
+            let painter = ui.painter_at(viewport_rect).with_clip_rect(viewport_rect);
 
-            let (canvas_rect, response) = ui.allocate_exact_size(display_size, egui::Sense::click_and_drag());
-            let painter = ui.painter_at(canvas_rect);
+            // Neutral Adwaita background
+            let canvas_bg = match self.theme_mode {
+                AdwaitaThemeMode::Dark => Color32::from_rgb(34, 34, 34),
+                AdwaitaThemeMode::Light => Color32::from_rgb(238, 238, 238),
+            };
+            painter.rect_filled(viewport_rect, Rounding::ZERO, canvas_bg);
+
+            // In Auto-Fit mode, update scale and centered pan to fit window
+            if self.auto_fit {
+                self.fit_to_viewport(viewport_rect.size());
+            } else {
+                self.clamp_pan(viewport_rect.size());
+            }
+
+            // Check Spacebar spring-loaded pan
+            let space_held = ctx.input(|i| i.key_down(egui::Key::Space)) && self.active_inline_text.is_none();
+            let is_middle_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle));
+            let is_pan_active = self.current_tool == ToolMode::Pan || space_held || is_middle_down;
+
+            // HUD dimensions
+            let hud_w = 210.0;
+            let hud_h = 32.0;
+            let hud_margin = 16.0;
+            let hud_rect = Rect::from_min_size(
+                Pos2::new(
+                    viewport_rect.max.x - hud_w - hud_margin,
+                    viewport_rect.max.y - hud_h - hud_margin,
+                ),
+                Vec2::new(hud_w, hud_h),
+            );
+            let on_hud = response.hover_pos().map_or(false, |pos| hud_rect.contains(pos));
+
+            // Mouse wheel Zoom and Pan gestures
+            let is_ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+            let scroll_delta = ctx.input(|i| i.smooth_scroll_delta);
+            let zoom_delta = ctx.input(|i| i.zoom_delta());
+
+            if let Some(hover_pos) = response.hover_pos() {
+                if !on_hud {
+                    if is_ctrl && scroll_delta.y.abs() > 0.1 {
+                        let factor = if scroll_delta.y > 0.0 { 1.15 } else { 1.0 / 1.15 };
+                        self.zoom_by(factor, hover_pos, viewport_rect.min);
+                        self.clamp_pan(viewport_rect.size());
+                    } else if zoom_delta != 1.0 {
+                        self.zoom_by(zoom_delta, hover_pos, viewport_rect.min);
+                        self.clamp_pan(viewport_rect.size());
+                    } else if !is_ctrl && (scroll_delta.x.abs() > 0.1 || scroll_delta.y.abs() > 0.1) {
+                        self.pan_offset += scroll_delta;
+                        self.auto_fit = false;
+                        self.clamp_pan(viewport_rect.size());
+                    }
+                }
+            }
+
+            // Direct drag Pan handling
+            if is_pan_active {
+                let is_dragging = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary)) || is_middle_down;
+                if is_dragging {
+                    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                    let delta = ctx.input(|i| i.pointer.delta());
+                    if delta.length_sq() > 0.0 {
+                        self.pan_offset += delta;
+                        self.auto_fit = false;
+                        self.clamp_pan(viewport_rect.size());
+                    }
+                } else {
+                    ctx.set_cursor_icon(egui::CursorIcon::Grab);
+                }
+            }
+
+            let scale = self.zoom_scale;
+            let canvas_rect = Rect::from_min_size(
+                viewport_rect.min + self.pan_offset,
+                Vec2::new(img_w * scale, img_h * scale),
+            );
 
             // 1. Draw base screenshot texture
             if let Some(texture) = &self.texture {
@@ -1334,6 +1537,8 @@ impl eframe::App for EditorApp {
                     Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                // Subtle edge border around the screenshot canvas
+                painter.rect_stroke(canvas_rect, Rounding::ZERO, Stroke::new(1.0_f32, Color32::from_black_alpha(45)));
             }
 
             // Transform helpers
@@ -1709,7 +1914,7 @@ impl eframe::App for EditorApp {
             }
 
             // 3. Handle Single Click placement (StepBadge, Inline Text, or Selection)
-            if response.clicked() {
+            if response.clicked() && !is_pan_active && !on_hud {
                 if let Some(click_pos) = response.interact_pointer_pos() {
                     if canvas_rect.contains(click_pos) {
                         let img_x = ((click_pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w);
@@ -1807,7 +2012,7 @@ impl eframe::App for EditorApp {
                 }
             }
 
-            if response.double_clicked() && self.current_tool == ToolMode::Polygon && self.polygon_is_freeform {
+            if response.double_clicked() && !is_pan_active && !on_hud && self.current_tool == ToolMode::Polygon && self.polygon_is_freeform {
                 self.commit_freeform_polygon();
             }
 
@@ -1846,7 +2051,7 @@ impl eframe::App for EditorApp {
             // 5. Handle Dragging (Shapes, Moving Selected Items, Resizing Arrows, Adjusting Crop, and Smudge Brush)
             let mut cropped_now = false;
 
-            if !matches!(self.current_tool, ToolMode::StepBadge | ToolMode::Text) {
+            if !matches!(self.current_tool, ToolMode::StepBadge | ToolMode::Text | ToolMode::Pan) && !is_pan_active && !on_hud {
                 if response.drag_started() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         self.drag_start = Some(pos);
@@ -1931,7 +2136,7 @@ impl eframe::App for EditorApp {
                         }
                     }
                 }
-                if response.dragged() {
+                if response.dragged() && !is_pan_active {
                     if let Some(pos) = response.interact_pointer_pos() {
                         if self.current_tool == ToolMode::Smudge {
                             if let Some(prev_pos) = self.drag_current {
@@ -2054,7 +2259,7 @@ impl eframe::App for EditorApp {
                         self.drag_current = Some(pos);
                     }
                 }
-                if response.drag_stopped() {
+                if response.drag_stopped() && !is_pan_active {
                     if self.current_tool == ToolMode::Smudge {
                         self.smudge_carried_color = None;
                         self.drag_start = None;
@@ -2122,7 +2327,8 @@ impl eframe::App for EditorApp {
             }
 
             // Draw active preview while dragging shapes
-            if let (Some(start), Some(mut curr)) = (self.drag_start, self.drag_current) {
+            if !is_pan_active {
+                if let (Some(start), Some(mut curr)) = (self.drag_start, self.drag_current) {
                 if is_ctrl && matches!(self.current_tool, ToolMode::Rectangle | ToolMode::Polygon | ToolMode::Ellipse | ToolMode::Crop) {
                     let dx = curr.x - start.x;
                     let dy = curr.y - start.y;
@@ -2238,6 +2444,7 @@ impl eframe::App for EditorApp {
                     _ => {}
                 }
             }
+            }
 
             // Draw active freeform polygon vertices and lines
             if self.current_tool == ToolMode::Polygon && self.polygon_is_freeform && !self.polygon_freeform_points.is_empty() {
@@ -2269,8 +2476,8 @@ impl eframe::App for EditorApp {
 
                                 let loupe_size = 92.0;
                                 let loupe_pos = Pos2::new(
-                                    (cursor_pos.x + 20.0).min(canvas_rect.max.x - loupe_size - 10.0),
-                                    (cursor_pos.y + 20.0).min(canvas_rect.max.y - loupe_size - 40.0),
+                                    (cursor_pos.x + 20.0).min(viewport_rect.max.x - loupe_size - 10.0),
+                                    (cursor_pos.y + 20.0).min(viewport_rect.max.y - loupe_size - 40.0),
                                 );
                                 let loupe_rect = Rect::from_min_size(loupe_pos, Vec2::splat(loupe_size));
 
@@ -2294,6 +2501,46 @@ impl eframe::App for EditorApp {
                     }
                 }
             }
+
+            // 7. Floating Zoom & Viewport HUD Pill (GNOME Libadwaita Style)
+            let hud_bg = match self.theme_mode {
+                AdwaitaThemeMode::Dark => Color32::from_black_alpha(215),
+                AdwaitaThemeMode::Light => Color32::from_rgba_unmultiplied(255, 255, 255, 230),
+            };
+            painter.rect_filled(hud_rect, Rounding::same(16.0), hud_bg);
+            painter.rect_stroke(
+                hud_rect,
+                Rounding::same(16.0),
+                Stroke::new(1.0_f32, Color32::from_white_alpha(40)),
+            );
+
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(hud_rect), |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                    if ui.button("➖").on_hover_text("Reduzir Zoom (Ctrl + -)").clicked() {
+                        self.zoom_by(1.0 / 1.15, viewport_rect.center(), viewport_rect.min);
+                        self.clamp_pan(viewport_rect.size());
+                        self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
+                    }
+
+                    let zoom_pct = (self.zoom_scale * 100.0).round() as i32;
+                    if ui.button(format!("{}%", zoom_pct)).on_hover_text("Tamanho Real 100% (Ctrl + 1)").clicked() {
+                        self.set_zoom_100(viewport_rect);
+                        self.set_status("Zoom: 100% (1:1)");
+                    }
+
+                    if ui.button("➕").on_hover_text("Aumentar Zoom (Ctrl + +)").clicked() {
+                        self.zoom_by(1.15, viewport_rect.center(), viewport_rect.min);
+                        self.clamp_pan(viewport_rect.size());
+                        self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
+                    }
+
+                    if ui.button("⛶ Ajustar").on_hover_text("Ajustar à Janela (Ctrl + 0)").clicked() {
+                        self.fit_to_viewport(viewport_rect.size());
+                        self.set_status("Ajustado à janela");
+                    }
+                });
+            });
         });
 
         // 6. Settings Modal (Global Shortcuts Configuration and Conflict Detection)

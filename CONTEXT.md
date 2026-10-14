@@ -50,6 +50,36 @@ _Avoid_: Sticky screenshot, float snip, picture-in-picture widget
 The resident background service and top-bar status item exposing quick capture triggers and options via the StatusNotifierItem (SNI) D-Bus protocol.
 _Avoid_: System tray applet, taskbar icon, daemon agent
 
+### Viewport & Navigation
+
+**Canvas Zoom**:
+The interactive scaling transformation applied to the visual representation of the Annotation Canvas and base screenshot or video frame in the Editor Window.
+_Avoid_: Scale factor, canvas resize, window magnification
+
+**Zoom Anchor**:
+The invariant focal point (positioned precisely under the mouse cursor during focal zoom) around which canvas coordinates expand or contract.
+_Avoid_: Pivot point, zoom center, focus spot
+
+**Viewport Transform**:
+The mathematical projection composed of zoom scale and pan offset that maps elements between Image Space and Screen Space.
+_Avoid_: Canvas matrix, screen mapping, view offset
+
+**Pan Offset**:
+The 2D positional translation vector applied to the Annotation Canvas viewport allowing inspection of off-screen regions of an enlarged image.
+_Avoid_: Scroll coordinate, view shift, canvas drag
+
+**Image Space**:
+The canonical 1:1 pixel coordinate system of the underlying raster capture or video stream, in which all Annotation Item geometries and crop bounds are stored and exported.
+_Avoid_: Canvas space, world pixels, raw coordinates
+
+**Screen Space**:
+The display-level window coordinate system in which GUI widgets, selection handles, and hit-test targets are measured in device-independent points.
+_Avoid_: Window pixels, physical coordinates
+
+**Pan Tool**:
+A dedicated navigation tool selectable via the toolbar or keyboard shortcut that translates the canvas viewport via primary mouse drag, complementing middle-click and spacebar gestures.
+_Avoid_: Hand tool, grab tool, mover
+
 ### Annotations & Drawing Tools
 
 **Freehand Pen**:
@@ -91,6 +121,10 @@ _Avoid_: Zoom preview, color picker magnifier
 **Selection Boundary**:
 The interactive visual handles and bounding outlines displayed when selecting an Annotation Item in the Editor Window. Hidden strictly during video playback and export pipelines to prevent visual pollution.
 _Avoid_: Blue box, drag frame, item border
+
+**Post-Creation Selection**:
+The automatic transition from a geometric shape authoring tool to the Selection Tool upon completing the placement of an Annotation Item, immediately exposing interactive handles for fine-tuning.
+_Avoid_: Auto pick, auto grab, tool switch on drop
 
 ### Video Recording & Timeline
 

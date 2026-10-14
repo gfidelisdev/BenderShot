@@ -377,3 +377,127 @@ fn test_shortcut_manager_helpers() {
     let _ = crate::shortcuts::ShortcutManager::is_running_as_appimage();
 }
 
+#[test]
+fn test_viewport_transform_zoom_and_focal_invariance() {
+    use crate::ui::editor::EditorApp;
+    use eframe::egui::{Pos2, Rect, Vec2};
+    use image::RgbaImage;
+
+    let img = RgbaImage::new(1000, 800);
+    let mut app = EditorApp::new(img, None);
+
+    // Initial state
+    assert!(app.zoom_scale > 0.0);
+
+    // 1. Auto-fit inside viewport (500, 400) -> scale should be 0.5
+    app.fit_to_viewport(Vec2::new(500.0, 400.0));
+    assert!((app.zoom_scale - 0.5).abs() < 1e-4);
+    assert!((app.pan_offset.x - 0.0).abs() < 1e-4);
+    assert!((app.pan_offset.y - 0.0).abs() < 1e-4);
+
+    // 2. Focal zoom invariance at cursor (100, 100)
+    let focal_pos = Pos2::new(100.0, 100.0);
+    let origin = Pos2::ZERO;
+
+    // Image coordinate under cursor before zoom
+    let img_x_before = (focal_pos.x - origin.x - app.pan_offset.x) / app.zoom_scale;
+    let img_y_before = (focal_pos.y - origin.y - app.pan_offset.y) / app.zoom_scale;
+
+    app.zoom_by(1.5, focal_pos, origin);
+
+    // Image coordinate under cursor after zoom
+    let img_x_after = (focal_pos.x - origin.x - app.pan_offset.x) / app.zoom_scale;
+    let img_y_after = (focal_pos.y - origin.y - app.pan_offset.y) / app.zoom_scale;
+
+    assert!(
+        (img_x_before - img_x_after).abs() < 1e-3,
+        "Focal zoom X invariance failed: before={}, after={}",
+        img_x_before,
+        img_x_after
+    );
+    assert!(
+        (img_y_before - img_y_after).abs() < 1e-3,
+        "Focal zoom Y invariance failed: before={}, after={}",
+        img_y_before,
+        img_y_after
+    );
+
+    // 3. Set 100% zoom
+    let vp_rect = Rect::from_min_size(origin, Vec2::new(1200.0, 900.0));
+    app.set_zoom_100(vp_rect);
+    assert_eq!(app.zoom_scale, 1.0);
+    assert_eq!(app.pan_offset.x, (1200.0 - 1000.0) * 0.5);
+    assert_eq!(app.pan_offset.y, (900.0 - 800.0) * 0.5);
+}
+
+#[test]
+fn test_viewport_pan_clamping_margins() {
+    use crate::ui::editor::EditorApp;
+    use eframe::egui::Vec2;
+    use image::RgbaImage;
+
+    let img = RgbaImage::new(800, 600);
+    let mut app = EditorApp::new(img, None);
+    let vp_size = Vec2::new(1000.0, 800.0);
+
+    app.fit_to_viewport(vp_size);
+
+    // Try panning way out of bounds to the left
+    app.pan_offset = Vec2::new(-99999.0, -99999.0);
+    app.clamp_pan(vp_size);
+
+    // Check that at least safety margin remains on screen
+    let img_screen_w = 800.0 * app.zoom_scale;
+    let img_screen_h = 600.0 * app.zoom_scale;
+    let margin_x = 100.0_f32.min(img_screen_w * 0.5);
+    let margin_y = 100.0_f32.min(img_screen_h * 0.5);
+
+    assert!(app.pan_offset.x >= margin_x - img_screen_w);
+    assert!(app.pan_offset.y >= margin_y - img_screen_h);
+
+    // Try panning way out of bounds to the right
+    app.pan_offset = Vec2::new(99999.0, 99999.0);
+    app.clamp_pan(vp_size);
+
+    assert!(app.pan_offset.x <= vp_size.x - margin_x);
+    assert!(app.pan_offset.y <= vp_size.y - margin_y);
+}
+
+#[test]
+fn test_post_creation_selection_auto_switch() {
+    use crate::model::ToolMode;
+    use crate::ui::editor::EditorApp;
+    use eframe::egui::{Pos2, Rect, Vec2};
+    use image::RgbaImage;
+
+    let img = RgbaImage::new(600, 400);
+    let mut app = EditorApp::new(img, None);
+    let bounds = Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0));
+
+    // 1. Arrow should switch to Select
+    app.current_tool = ToolMode::Arrow;
+    app.finish_current_shape(Pos2::new(10.0, 10.0), Pos2::new(100.0, 100.0), bounds, false);
+    assert_eq!(app.current_tool, ToolMode::Select);
+    assert_eq!(app.selected_item_index, Some(0));
+
+    // 2. Rectangle should switch to Select
+    app.current_tool = ToolMode::Rectangle;
+    app.finish_current_shape(Pos2::new(20.0, 20.0), Pos2::new(80.0, 80.0), bounds, false);
+    assert_eq!(app.current_tool, ToolMode::Select);
+    assert_eq!(app.selected_item_index, Some(1));
+
+    // 3. Ellipse should switch to Select
+    app.current_tool = ToolMode::Ellipse;
+    app.finish_current_shape(Pos2::new(30.0, 30.0), Pos2::new(90.0, 90.0), bounds, false);
+    assert_eq!(app.current_tool, ToolMode::Select);
+    assert_eq!(app.selected_item_index, Some(2));
+
+    // 4. Bezier should switch to Select
+    app.current_tool = ToolMode::Bezier;
+    app.finish_current_shape(Pos2::new(10.0, 50.0), Pos2::new(120.0, 50.0), bounds, false);
+    assert_eq!(app.current_tool, ToolMode::Select);
+    assert_eq!(app.selected_item_index, Some(3));
+}
+
+
+
