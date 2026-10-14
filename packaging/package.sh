@@ -45,9 +45,9 @@ cp "${ASSETS_DIR}/bendershot.desktop" "${DEB_ROOT}/usr/share/applications/"
 cp "${ASSETS_DIR}/bendershot.svg" "${DEB_ROOT}/usr/share/icons/hicolor/scalable/apps/"
 cp "${ASSETS_DIR}/bendershot.service" "${DEB_ROOT}/usr/lib/systemd/user/"
 
-cat << 'EOF' > "${DEB_ROOT}/DEBIAN/control"
+cat << EOF > "${DEB_ROOT}/DEBIAN/control"
 Package: bendershot
-Version: 0.1.0
+Version: ${VERSION}
 Section: graphics
 Priority: optional
 Architecture: amd64
