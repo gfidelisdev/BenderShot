@@ -23,6 +23,9 @@ rm -rf %{buildroot}
 mkdir -p %{buildroot}%{_bindir}
 mkdir -p %{buildroot}%{_datadir}/applications
 mkdir -p %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
+mkdir -p %{buildroot}%{_datadir}/icons/hicolor/256x256/apps
+mkdir -p %{buildroot}%{_datadir}/icons/hicolor/64x64/apps
+mkdir -p %{buildroot}%{_datadir}/pixmaps
 mkdir -p %{buildroot}%{_userunitdir}
 mkdir -p %{buildroot}%{_sysconfdir}/xdg/autostart
 
@@ -31,6 +34,9 @@ ln -sf bendershot %{buildroot}%{_bindir}/enhanced-shot
 install -m 644 %{_sourcedir}/bendershot.desktop %{buildroot}%{_datadir}/applications/bendershot.desktop
 install -m 644 %{_sourcedir}/bendershot-autostart.desktop %{buildroot}%{_sysconfdir}/xdg/autostart/bendershot-autostart.desktop
 install -m 644 %{_sourcedir}/bendershot.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/bendershot.svg
+install -m 644 %{_sourcedir}/bendershot.png %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/bendershot.png
+install -m 644 %{_sourcedir}/bendershot_64.png %{buildroot}%{_datadir}/icons/hicolor/64x64/apps/bendershot.png
+install -m 644 %{_sourcedir}/bendershot.png %{buildroot}%{_datadir}/pixmaps/bendershot.png
 install -m 644 %{_sourcedir}/bendershot.service %{buildroot}%{_userunitdir}/bendershot.service
 
 %post
@@ -91,6 +97,9 @@ fi
 %{_datadir}/applications/bendershot.desktop
 %{_sysconfdir}/xdg/autostart/bendershot-autostart.desktop
 %{_datadir}/icons/hicolor/scalable/apps/bendershot.svg
+%{_datadir}/icons/hicolor/256x256/apps/bendershot.png
+%{_datadir}/icons/hicolor/64x64/apps/bendershot.png
+%{_datadir}/pixmaps/bendershot.png
 %{_userunitdir}/bendershot.service
 
 %changelog

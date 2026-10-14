@@ -5,5 +5,7 @@ Comment=BenderShot captura e atalhos na bandeja
 Exec=bendershot daemon
 Icon=bendershot
 Terminal=false
+StartupNotify=false
+StartupWMClass=bendershot
 Categories=Utility;
 X-GNOME-Autostart-enabled=true

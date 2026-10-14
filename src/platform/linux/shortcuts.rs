@@ -276,7 +276,7 @@ impl ShortcutManager {
                 let _ = std::fs::create_dir_all(&autostart_dir);
                 let exe_cmd = get_executable_command();
                 let content = format!(
-                    "[Desktop Entry]\nType=Application\nName=BenderShot\nComment=BenderShot daemon e atalhos na bandeja\nExec={} daemon\nIcon=bendershot\nTerminal=false\nCategories=Utility;\nX-GNOME-Autostart-enabled=true\n",
+                    "[Desktop Entry]\nType=Application\nName=BenderShot\nComment=BenderShot daemon e atalhos na bandeja\nExec={} daemon\nIcon=bendershot\nTerminal=false\nStartupNotify=false\nStartupWMClass=bendershot\nCategories=Utility;\nX-GNOME-Autostart-enabled=true\n",
                     exe_cmd
                 );
                 let _ = std::fs::write(desktop_file, content);
@@ -368,16 +368,28 @@ impl ShortcutManager {
         let desktop_file = apps_dir.join("bendershot.desktop");
 
         let desktop_content = format!(
-            "[Desktop Entry]\nName=BenderShot\nComment=Captura, gravação e anotação profissional de tela para Linux Wayland\nExec={} region\nIcon=bendershot\nTerminal=false\nType=Application\nCategories=Utility;Graphics;Photography;\nKeywords=screenshot;captura;print;tela;anotação;gravação;video;screencast;\nActions=Region;Full;Window;Record;Daemon;Settings;Wizard;\n\n[Desktop Action Region]\nName=Capturar Região\nExec={} region\n\n[Desktop Action Full]\nName=Capturar Tela Inteira\nExec={} full\n\n[Desktop Action Window]\nName=Capturar Janela Ativa\nExec={} window\n\n[Desktop Action Record]\nName=Gravar Vídeo da Tela\nExec={} record\n\n[Desktop Action Daemon]\nName=Iniciar no Painel Superior (Daemon)\nExec={} daemon\n\n[Desktop Action Settings]\nName=Configurações\nExec={} settings\n\n[Desktop Action Wizard]\nName=Assistente de Configuração\nExec={} wizard\n",
+            "[Desktop Entry]\nName=BenderShot\nComment=Captura, gravação e anotação profissional de tela para Linux Wayland\nExec={} region\nIcon=bendershot\nTerminal=false\nType=Application\nStartupNotify=true\nStartupWMClass=bendershot\nCategories=Utility;Graphics;Photography;\nKeywords=screenshot;captura;print;tela;anotação;gravação;video;screencast;\nActions=Region;Full;Window;Record;Daemon;Settings;Wizard;\n\n[Desktop Action Region]\nName=Capturar Região\nExec={} region\n\n[Desktop Action Full]\nName=Capturar Tela Inteira\nExec={} full\n\n[Desktop Action Window]\nName=Capturar Janela Ativa\nExec={} window\n\n[Desktop Action Record]\nName=Gravar Vídeo da Tela\nExec={} record\n\n[Desktop Action Daemon]\nName=Iniciar no Painel Superior (Daemon)\nExec={} daemon\n\n[Desktop Action Settings]\nName=Configurações\nExec={} settings\n\n[Desktop Action Wizard]\nName=Assistente de Configuração\nExec={} wizard\n",
             appimage_path, appimage_path, appimage_path, appimage_path, appimage_path, appimage_path, appimage_path, appimage_path
         );
         let _ = std::fs::write(&desktop_file, desktop_content);
 
-        let icon_dir = data_dir.join("icons").join("hicolor").join("scalable").join("apps");
-        let _ = std::fs::create_dir_all(&icon_dir);
+        let icon_dir_svg = data_dir.join("icons").join("hicolor").join("scalable").join("apps");
+        let icon_dir_256 = data_dir.join("icons").join("hicolor").join("256x256").join("apps");
+        let icon_dir_64 = data_dir.join("icons").join("hicolor").join("64x64").join("apps");
+        let pixmaps_dir = data_dir.join("pixmaps");
+        let _ = std::fs::create_dir_all(&icon_dir_svg);
+        let _ = std::fs::create_dir_all(&icon_dir_256);
+        let _ = std::fs::create_dir_all(&icon_dir_64);
+        let _ = std::fs::create_dir_all(&pixmaps_dir);
+
         static SVG_BYTES: &[u8] = include_bytes!("../../../packaging/assets/bendershot.svg");
-        let icon_file = icon_dir.join("bendershot.svg");
-        let _ = std::fs::write(icon_file, SVG_BYTES);
+        static PNG_BYTES_256: &[u8] = include_bytes!("../../../packaging/assets/bendershot.png");
+        static PNG_BYTES_64: &[u8] = include_bytes!("../../../packaging/assets/bendershot_64.png");
+
+        let _ = std::fs::write(icon_dir_svg.join("bendershot.svg"), SVG_BYTES);
+        let _ = std::fs::write(icon_dir_256.join("bendershot.png"), PNG_BYTES_256);
+        let _ = std::fs::write(icon_dir_64.join("bendershot.png"), PNG_BYTES_64);
+        let _ = std::fs::write(pixmaps_dir.join("bendershot.png"), PNG_BYTES_256);
 
         let home = base_dirs.home_dir();
         let local_bin = home.join(".local").join("bin");

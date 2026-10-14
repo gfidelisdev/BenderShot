@@ -224,6 +224,7 @@ pub fn run_wizard_window() -> anyhow::Result<()> {
     let icon_data = load_app_icon();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("BenderShot - Assistente de Configuração")
+        .with_app_id("bendershot")
         .with_inner_size([540.0, 500.0])
         .with_resizable(false);
 
@@ -238,7 +239,7 @@ pub fn run_wizard_window() -> anyhow::Result<()> {
     };
 
     eframe::run_native(
-        "BenderShot - Assistente de Configuração",
+        "bendershot",
         native_options,
         Box::new(|_cc| Ok(Box::new(SetupWizardApp::new()))),
     )

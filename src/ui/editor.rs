@@ -2469,6 +2469,7 @@ pub fn run_editor(image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Re
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("BenderShot")
+        .with_app_id("bendershot")
         .with_inner_size([width, height])
         .with_min_inner_size([700.0, 480.0]);
     if let Some(icon) = crate::ui::load_app_icon() {
@@ -2481,7 +2482,7 @@ pub fn run_editor(image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Re
     };
 
     eframe::run_native(
-        "BenderShot",
+        "bendershot",
         options,
         Box::new(|_cc| Ok(Box::new(EditorApp::new(image, pin_sender)))),
     )
@@ -2497,6 +2498,7 @@ pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Er
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("BenderShot - Editor de Vídeo")
+        .with_app_id("bendershot")
         .with_inner_size([width, height])
         .with_min_inner_size([750.0, 520.0]);
     if let Some(icon) = crate::ui::load_app_icon() {
@@ -2509,7 +2511,7 @@ pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Er
     };
 
     eframe::run_native(
-        "BenderShot - Editor de Vídeo",
+        "bendershot",
         options,
         Box::new(move |_cc| {
             let mut app = EditorApp::new(initial_frame, None);
