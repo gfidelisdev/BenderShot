@@ -590,7 +590,7 @@ impl EditorApp {
         rasterize_scene(&self.base_image, &self.scene)
     }
 
-    fn copy_and_exit(&mut self, ctx: &egui::Context) {
+    fn copy_image(&mut self) {
         self.commit_inline_text();
         let final_image = self.export_current_raster();
         if let Err(e) = Exporter::copy_to_clipboard(&final_image) {
@@ -598,7 +598,7 @@ impl EditorApp {
             self.set_status(format!("Erro ao copiar: {e}"));
         } else {
             let _ = Exporter::auto_save(&final_image);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            // ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 }
@@ -744,7 +744,7 @@ impl eframe::App for EditorApp {
         } else {
             // Global keyboard shortcuts (only active when not recording key combination)
             if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
-                self.copy_and_exit(ctx);
+                self.copy_image();
             }
             if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
                 self.undo();
@@ -1074,7 +1074,7 @@ impl eframe::App for EditorApp {
                     .rounding(Rounding::same(8.0));
 
                     if ui.add(copy_btn).clicked() {
-                        self.copy_and_exit(ctx);
+                        self.copy_image();
                     }
 
                     if ui.button("📂 Abrir").on_hover_text("Abrir imagem do disco para edição").clicked() {
