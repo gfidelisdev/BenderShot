@@ -21,6 +21,7 @@
 # Scratch and test files
 scratch/
 test_output.png
+.flowmem/
 
 # Packaging build artifacts
 /packaging/dist/
