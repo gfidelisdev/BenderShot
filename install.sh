@@ -122,26 +122,13 @@ install_files() {
     fi
 }
 
-configure_gnome_shortcut() {
-    local keybinding="$1"
-    local binding_name="$2"
-    local command_to_run="${BIN_DIR}/${APP_NAME} region"
+configure_single_shortcut() {
+    local slot="$1"
+    local name="$2"
+    local cmd="$3"
+    local binding="$4"
 
-    if ! command -v gsettings &>/dev/null; then
-        echo -e "${YELLOW}gsettings não disponível. Atalhos devem ser configurados manualmente.${RESET}"
-        return
-    fi
-
-    # If keybinding is 'Print', we disable the GNOME native screenshot UI first
-    if [ "${keybinding}" = "Print" ]; then
-        echo -e "  [i] Desvinculando PrintScreen nativo do GNOME Shell..."
-        gsettings set org.gnome.shell.keybindings show-screenshot-ui "[]" 2>/dev/null || true
-    fi
-
-    echo -e "  [✔] Configurando atalho global GNOME: ${BOLD}${keybinding}${RESET} -> '${command_to_run}'"
-
-    # Locate or create a custom shortcut slot
-    local custom_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot/"
+    local custom_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${slot}/"
     local current_bindings
     current_bindings="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "@as []")"
 
@@ -149,24 +136,58 @@ configure_gnome_shortcut() {
         if [ "${current_bindings}" = "@as []" ] || [ "${current_bindings}" = "[]" ]; then
             gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['${custom_path}']"
         else
-            # Append to array
             local new_bindings
             new_bindings="${current_bindings%]*}, '${custom_path}']"
             gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "${new_bindings}"
         fi
     fi
 
-    # Write keybinding schema
-    gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path} name "${binding_name}"
-    gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path} command "${command_to_run}"
-    gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path} binding "${keybinding}"
+    gsettings set "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path}" name "${name}"
+    gsettings set "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path}" command "${cmd}"
+    gsettings set "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${custom_path}" binding "${binding}"
+}
+
+configure_gnome_shortcuts() {
+    if ! command -v gsettings &>/dev/null; then
+        echo -e "${YELLOW}gsettings não disponível. Atalhos devem ser configurados manualmente.${RESET}"
+        return
+    fi
+
+    echo -e "  [i] Desvinculando atalhos de captura conflitantes do GNOME Shell..."
+    gsettings set org.gnome.shell.keybindings show-screenshot-ui "[]" 2>/dev/null || true
+    gsettings set org.gnome.shell.keybindings screenshot "[]" 2>/dev/null || true
+    gsettings set org.gnome.shell.keybindings screenshot-window "[]" 2>/dev/null || true
+    gsettings set org.gnome.settings-daemon.plugins.media-keys window-screenshot "['']" 2>/dev/null || true
+    gsettings set org.gnome.settings-daemon.plugins.media-keys window-screenshot-clip "['']" 2>/dev/null || true
+    gsettings set org.gnome.settings-daemon.plugins.media-keys screenshot "['']" 2>/dev/null || true
+    gsettings set org.gnome.settings-daemon.plugins.media-keys screenshot-clip "['']" 2>/dev/null || true
+    gsettings set org.gnome.settings-daemon.plugins.media-keys area-screenshot "['']" 2>/dev/null || true
+    gsettings set org.gnome.settings-daemon.plugins.media-keys area-screenshot-clip "['']" 2>/dev/null || true
+
+    echo -e "  [✔] Configurando atalhos do BenderShot no GNOME:"
+    echo -e "      - PrintScreen: Tela Cheia"
+    configure_single_shortcut "bendershot" "BenderShot Captura Tela Inteira" "${BIN_DIR}/${APP_NAME} full" "Print"
+
+    echo -e "      - <Alt>Print: Capturar Janela Ativa"
+    configure_single_shortcut "bendershot-window" "BenderShot Capturar Janela" "${BIN_DIR}/${APP_NAME} window" "<Alt>Print"
+
+    echo -e "      - <Shift>Print: Seleção de Região (Modo Trecho)"
+    configure_single_shortcut "bendershot-region" "BenderShot Capturar Região" "${BIN_DIR}/${APP_NAME} region" "<Shift>Print"
+
+    echo -e "      - <Ctrl><Shift>R: Gravação de Vídeo"
+    configure_single_shortcut "bendershot-record" "BenderShot Gravar Vídeo" "${BIN_DIR}/${APP_NAME} record" "<Ctrl><Shift>R"
 
     # Pre-authorize XDG Desktop Portal screenshot permissions
     if command -v busctl &>/dev/null; then
         busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore org.freedesktop.impl.portal.PermissionStore SetPermission sbssas screenshot true screenshot bendershot 1 yes 2>/dev/null || true
     fi
 
-    echo -e "  ${GREEN}Atalho registrado com sucesso no GNOME!${RESET}"
+    # Restart media-keys daemon to apply changes immediately
+    if command -v systemctl &>/dev/null; then
+        systemctl --user restart org.gnome.SettingsDaemon.MediaKeys.target 2>/dev/null || true
+    fi
+
+    echo -e "  ${GREEN}Atalhos registrados com sucesso no GNOME!${RESET}"
 }
 
 configure_daemon() {
@@ -243,7 +264,7 @@ CHOICE="${CHOICE:-1}"
 case "${CHOICE}" in
     1)
         install_files
-        configure_gnome_shortcut "Print" "BenderShot Captura"
+        configure_gnome_shortcuts
         configure_daemon
         ;;
     2)
@@ -252,10 +273,11 @@ case "${CHOICE}" in
         echo "  - <Ctrl><Shift>Print"
         echo "  - <Primary><Alt>s"
         echo "  - <Super>s"
-        read -rp "Digite a combinação de teclas desejada: " USER_KEY
+        read -rp "Digite a combinação de teclas desejada para captura padrão: " USER_KEY
         if [ -n "${USER_KEY}" ]; then
             install_files
-            configure_gnome_shortcut "${USER_KEY}" "BenderShot Captura"
+            configure_gnome_shortcuts
+            configure_single_shortcut "bendershot" "BenderShot Captura" "${BIN_DIR}/${APP_NAME} full" "${USER_KEY}"
             configure_daemon
         else
             echo "Nenhum atalho digitado. Instalando apenas lançadores."

@@ -318,6 +318,12 @@ fn test_shortcut_manager_defaults() {
     let binding = crate::shortcuts::ShortcutManager::get_current_binding();
     assert!(!binding.is_empty(), "Default screenshot binding should not be empty");
 
+    let window_binding = crate::shortcuts::ShortcutManager::get_current_window_binding();
+    assert!(!window_binding.is_empty(), "Default window binding should not be empty");
+
+    let region_binding = crate::shortcuts::ShortcutManager::get_current_region_binding();
+    assert!(!region_binding.is_empty(), "Default region binding should not be empty");
+
     let record_binding = crate::shortcuts::ShortcutManager::get_current_record_binding();
     assert!(!record_binding.is_empty(), "Default record binding should not be empty");
 }
@@ -359,6 +365,8 @@ fn test_windows_parse_hotkey() {
     assert_eq!(p6, p5);
 
     assert_eq!(ShortcutManager::get_current_binding(), "Ctrl+Print");
+    assert_eq!(ShortcutManager::get_current_window_binding(), "Alt+Print");
+    assert_eq!(ShortcutManager::get_current_region_binding(), "Shift+Print");
 }
 
 #[test]
@@ -384,7 +392,7 @@ fn test_viewport_transform_zoom_and_focal_invariance() {
     use image::RgbaImage;
 
     let img = RgbaImage::new(1000, 800);
-    let mut app = EditorApp::new(img, None);
+    let mut app = EditorApp::new(img, None, crate::capture::CaptureMode::Fullscreen);
 
     // Initial state
     assert!(app.zoom_scale > 0.0);
@@ -437,7 +445,7 @@ fn test_viewport_pan_clamping_margins() {
     use image::RgbaImage;
 
     let img = RgbaImage::new(800, 600);
-    let mut app = EditorApp::new(img, None);
+    let mut app = EditorApp::new(img, None, crate::capture::CaptureMode::Fullscreen);
     let vp_size = Vec2::new(1000.0, 800.0);
 
     app.fit_to_viewport(vp_size);
@@ -471,7 +479,7 @@ fn test_post_creation_selection_auto_switch() {
     use image::RgbaImage;
 
     let img = RgbaImage::new(600, 400);
-    let mut app = EditorApp::new(img, None);
+    let mut app = EditorApp::new(img, None, crate::capture::CaptureMode::Fullscreen);
     let bounds = Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0));
 
     // 1. Arrow should switch to Select
@@ -660,4 +668,172 @@ fn test_app_config_update_fields_serde() {
     assert!(!reloaded.auto_check_updates);
     assert_eq!(reloaded.latest_known_tag, Some("v0.2.2.2".into()));
     assert_eq!(reloaded.installed_version_override, Some("v0.2.2.2".into()));
+}
+
+#[test]
+fn test_editor_app_capture_modes() {
+    use crate::capture::CaptureMode;
+    use crate::model::ToolMode;
+    use crate::ui::editor::EditorApp;
+    use image::RgbaImage;
+
+    let img = RgbaImage::new(100, 100);
+
+    // Region mode -> ToolMode::Crop
+    let app_region = EditorApp::new(img.clone(), None, CaptureMode::Region);
+    assert_eq!(app_region.current_tool, ToolMode::Crop);
+
+    // Window mode -> ToolMode::Arrow
+    let app_window = EditorApp::new(img.clone(), None, CaptureMode::Window);
+    assert_eq!(app_window.current_tool, ToolMode::Arrow);
+
+    // Fullscreen mode -> ToolMode::Arrow
+    let app_full = EditorApp::new(img, None, CaptureMode::Fullscreen);
+    assert_eq!(app_full.current_tool, ToolMode::Arrow);
+}
+
+#[test]
+fn test_region_selector_crop_calculation() {
+    use image::RgbaImage;
+    use eframe::egui::{Pos2, Rect};
+
+    // Create a 200x100 test image with colored pixels
+    let mut img = RgbaImage::new(200, 100);
+    for x in 0..200 {
+        for y in 0..100 {
+            img.put_pixel(x, y, image::Rgba([x as u8, y as u8, 128, 255]));
+        }
+    }
+
+    // Suppose screen is 1000x500 points (scale factor 0.2)
+    let screen_rect = Rect::from_min_size(Pos2::ZERO, eframe::egui::Vec2::new(1000.0, 500.0));
+    let scale_x = 200.0 / 1000.0;
+    let scale_y = 100.0 / 500.0;
+
+    // Selection of 250..750 x, 100..300 y in screen points
+    let sel = Rect::from_min_max(Pos2::new(250.0, 100.0), Pos2::new(750.0, 300.0));
+
+    let min_x = (((sel.min.x - screen_rect.min.x) * scale_x).round() as u32).min(200);
+    let min_y = (((sel.min.y - screen_rect.min.y) * scale_y).round() as u32).min(100);
+    let max_x = (((sel.max.x - screen_rect.min.x) * scale_x).round() as u32).min(200);
+    let max_y = (((sel.max.y - screen_rect.min.y) * scale_y).round() as u32).min(100);
+
+    assert_eq!(min_x, 50);
+    assert_eq!(min_y, 20);
+    assert_eq!(max_x, 150);
+    assert_eq!(max_y, 60);
+
+    let cropped = image::imageops::crop_imm(&img, min_x, min_y, max_x - min_x, max_y - min_y).to_image();
+    assert_eq!(cropped.width(), 100);
+    assert_eq!(cropped.height(), 40);
+
+    // Verify top-left pixel matches original image at (50, 20)
+    assert_eq!(cropped.get_pixel(0, 0), img.get_pixel(50, 20));
+    // Verify bottom-right pixel matches original image at (149, 59)
+    assert_eq!(cropped.get_pixel(99, 39), img.get_pixel(149, 59));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_shortcut_normalization_and_conflict_handling() {
+    use crate::platform::linux::shortcuts::unbind_conflicting_system_shortcuts;
+
+    // unbind_conflicting_system_shortcuts should execute cleanly without panic
+    unbind_conflicting_system_shortcuts("<Alt>Print");
+    unbind_conflicting_system_shortcuts("Alt+Print");
+    unbind_conflicting_system_shortcuts("<Shift>Print");
+    unbind_conflicting_system_shortcuts("<Ctrl><Shift>R");
+}
+
+#[test]
+fn test_trim_transparent_window_buffer() {
+    use crate::capture::trim_transparent;
+    use image::{Rgba, RgbaImage};
+
+    // Simulate a 400x300 monitor buffer with a 120x80 window at (10, 20)
+    // surrounded by translucent window shadow (alpha 100) and transparent background (alpha 0)
+    let mut img = RgbaImage::from_pixel(400, 300, Rgba([0, 0, 0, 0]));
+
+    // Shadow ring around (5..135, 15..105)
+    for y in 15..105 {
+        for x in 5..135 {
+            img.put_pixel(x, y, Rgba([0, 0, 0, 100]));
+        }
+    }
+
+    // Opaque window content at (10..130, 20..100)
+    for y in 20..100 {
+        for x in 10..130 {
+            img.put_pixel(x, y, Rgba([40, 80, 160, 255]));
+        }
+    }
+
+    let trimmed = trim_transparent(img);
+    assert_eq!(trimmed.width(), 120);
+    assert_eq!(trimmed.height(), 80);
+    assert_eq!(*trimmed.get_pixel(0, 0), Rgba([40, 80, 160, 255]));
+}
+
+#[test]
+fn test_crop_selection_from_desktop_multi_monitor() {
+    use crate::capture::{crop_selection_from_desktop, MonitorLayout, RegionSelection};
+    use image::{Rgba, RgbaImage};
+
+    // Dual monitor desktop: 3440x1440 at (0,0) + 1920x1200 at (3440,0) => total 5360x1440
+    let mut desktop = RgbaImage::new(5360, 1440);
+    // Mark a test region at (500, 300) on primary monitor
+    desktop.put_pixel(500, 300, Rgba([255, 10, 20, 255]));
+    // Mark a test region at (3440 + 200, 150) on secondary monitor
+    desktop.put_pixel(3640, 150, Rgba([10, 255, 30, 255]));
+
+    let monitors = vec![
+        MonitorLayout {
+            x: 0.0,
+            y: 0.0,
+            w: 3440.0,
+            h: 1440.0,
+            lw: 3440.0,
+            lh: 1440.0,
+            primary: true,
+        },
+        MonitorLayout {
+            x: 3440.0,
+            y: 0.0,
+            w: 1920.0,
+            h: 1200.0,
+            lw: 1920.0,
+            lh: 1200.0,
+            primary: false,
+        },
+    ];
+
+    // 1. Selection on primary monitor (overlay 3440x1440, rect [500, 300, 800, 500])
+    let sel_primary = RegionSelection {
+        rect: [500.0, 300.0, 800.0, 500.0],
+        overlay_size: [3440.0, 1440.0],
+    };
+    let cropped_primary = crop_selection_from_desktop(&desktop, &monitors, &sel_primary)
+        .expect("primary monitor crop should succeed");
+    assert_eq!(cropped_primary.dimensions(), (300, 200));
+    assert_eq!(*cropped_primary.get_pixel(0, 0), Rgba([255, 10, 20, 255]));
+
+    // 2. Selection on secondary monitor (overlay 1920x1200, rect [200, 150, 600, 400])
+    let sel_secondary = RegionSelection {
+        rect: [200.0, 150.0, 600.0, 400.0],
+        overlay_size: [1920.0, 1200.0],
+    };
+    let cropped_secondary = crop_selection_from_desktop(&desktop, &monitors, &sel_secondary)
+        .expect("secondary monitor crop should succeed");
+    assert_eq!(cropped_secondary.dimensions(), (400, 250));
+    assert_eq!(*cropped_secondary.get_pixel(0, 0), Rgba([10, 255, 30, 255]));
+
+    // 3. Full-desktop overlay (5360x1440) selecting on secondary monitor [3640, 150, 4040, 400]
+    let sel_full_desktop = RegionSelection {
+        rect: [3640.0, 150.0, 4040.0, 400.0],
+        overlay_size: [5360.0, 1440.0],
+    };
+    let cropped_full = crop_selection_from_desktop(&desktop, &monitors, &sel_full_desktop)
+        .expect("full-desktop overlay crop should succeed");
+    assert_eq!(cropped_full.dimensions(), (400, 250));
+    assert_eq!(*cropped_full.get_pixel(0, 0), Rgba([10, 255, 30, 255]));
 }

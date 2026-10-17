@@ -48,6 +48,16 @@ async fn main() -> Result<()> {
             } else {
                 println!("✓ Tecla PrintScreen vinculada à captura do BenderShot.");
             }
+            if let Err(e) = bendershot::shortcuts::ShortcutManager::set_window_binding("<Alt>Print") {
+                eprintln!("Aviso: Falha ao configurar atalho de janela: {}", e);
+            } else {
+                println!("✓ Atalho de captura de janela <Alt>Print configurado.");
+            }
+            if let Err(e) = bendershot::shortcuts::ShortcutManager::set_region_binding("<Shift>Print") {
+                eprintln!("Aviso: Falha ao configurar atalho de trecho: {}", e);
+            } else {
+                println!("✓ Atalho de captura de trecho <Shift>Print configurado.");
+            }
             if let Err(e) = bendershot::shortcuts::ShortcutManager::set_record_binding("<Ctrl><Shift>R") {
                 eprintln!("Aviso: Falha ao configurar atalho de gravação: {}", e);
             } else {
@@ -81,19 +91,26 @@ async fn main() -> Result<()> {
         }
         Commands::Edit { path } => {
             let image = capture::CaptureBackend::load_image_from_path(&path)?;
-            open_editor_session(image)?;
+            open_editor_session(image, capture::CaptureMode::Fullscreen)?;
         }
         Commands::Region => {
-            let image = capture::CaptureBackend::capture(capture::CaptureMode::Region).await?;
-            open_editor_session(image)?;
+            if let Some(selection) = ui::run_region_selector().map_err(|e| anyhow::anyhow!("{e:?}"))? {
+                // Allow the compositor to unmap the transparent overlay before capturing
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                let cropped = capture::CaptureBackend::capture_region(selection).await?;
+                open_editor_session(cropped, capture::CaptureMode::Fullscreen)?;
+            } else {
+                #[cfg(target_os = "linux")]
+                bendershot::platform::linux::capture::remove_capture_pid_file();
+            }
         }
         Commands::Full => {
             let image = capture::CaptureBackend::capture(capture::CaptureMode::Fullscreen).await?;
-            open_editor_session(image)?;
+            open_editor_session(image, capture::CaptureMode::Fullscreen)?;
         }
         Commands::Window => {
             let image = capture::CaptureBackend::capture(capture::CaptureMode::Window).await?;
-            open_editor_session(image)?;
+            open_editor_session(image, capture::CaptureMode::Window)?;
         }
         Commands::Record => {
             if bendershot::video::ScreenRecorder::is_recording() {
@@ -176,11 +193,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn open_editor_session(image: image::RgbaImage) -> Result<()> {
+fn open_editor_session(image: image::RgbaImage, mode: capture::CaptureMode) -> Result<()> {
     let (pin_tx, pin_rx) = channel::<image::RgbaImage>();
 
     // Run the main editor window
-    let _ = ui::run_editor(image, Some(pin_tx));
+    let _ = ui::run_editor(image, Some(pin_tx), mode);
 
     // If an image was sent to be pinned, open the floating pin window
     if let Ok(pinned_image) = pin_rx.try_recv() {

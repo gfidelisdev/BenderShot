@@ -1,5 +1,6 @@
 pub mod editor;
 pub mod pin;
+pub mod region_selector;
 pub mod settings;
 pub mod theme;
 pub mod updater_ui;
@@ -7,6 +8,7 @@ pub mod wizard;
 
 pub use editor::run_editor;
 pub use pin::run_pin_window;
+pub use region_selector::run_region_selector;
 pub use settings::run_settings_window;
 pub use theme::{apply_adwaita_theme, AdwaitaThemeMode};
 pub use updater_ui::run_updater_window;

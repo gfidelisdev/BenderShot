@@ -6,6 +6,8 @@ use egui::{Color32, RichText, Rounding};
 
 pub struct SetupWizardApp {
     replace_print: bool,
+    replace_window: bool,
+    replace_region: bool,
     enable_record: bool,
     enable_autostart: bool,
     integrate_appimage: bool,
@@ -19,6 +21,8 @@ impl SetupWizardApp {
         let is_appimage = ShortcutManager::is_running_as_appimage();
         Self {
             replace_print: true,
+            replace_window: true,
+            replace_region: true,
             enable_record: true,
             enable_autostart: true,
             integrate_appimage: is_appimage,
@@ -34,6 +38,18 @@ impl SetupWizardApp {
         if self.replace_print {
             if let Err(e) = ShortcutManager::set_binding("Print") {
                 errors.push(format!("Atalho Print: {}", e));
+            }
+        }
+
+        if self.replace_window {
+            if let Err(e) = ShortcutManager::set_window_binding("<Alt>Print") {
+                errors.push(format!("Atalho Janela Ativa: {}", e));
+            }
+        }
+
+        if self.replace_region {
+            if let Err(e) = ShortcutManager::set_region_binding("<Shift>Print") {
+                errors.push(format!("Atalho Trecho / Região: {}", e));
             }
         }
 
@@ -109,26 +125,52 @@ impl eframe::App for SetupWizardApp {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
 
-                    // Option 1: PrintScreen Key
+                    // Option 1: Fullscreen (Print)
                     ui.checkbox(
                         &mut self.replace_print,
-                        RichText::new("📸 Substituir a tecla PrintScreen padrão").strong().size(14.0),
+                        RichText::new("🖥️ Captura de Tela Cheia (Print)").strong().size(14.0),
                     );
                     ui.add_space(2.0);
                     ui.label(
-                        RichText::new("     Desvincula o print nativo do GNOME e abre a captura com anotações vetoriais do BenderShot.")
+                        RichText::new("     Substitui a tecla PrintScreen padrão para captura completa de tela.")
                             .size(11.5)
                             .color(Color32::from_rgb(170, 170, 180)),
                     );
 
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
+                    ui.add_space(10.0);
 
-                    // Option 2: Record Shortcut
+                    // Option 2: Active Window (<Alt>Print)
+                    ui.checkbox(
+                        &mut self.replace_window,
+                        RichText::new("🪟 Captura de Janela Ativa (<Alt>Print)").strong().size(14.0),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("     Captura a janela atualmente ativa/em foco.")
+                            .size(11.5)
+                            .color(Color32::from_rgb(170, 170, 180)),
+                    );
+
+                    ui.add_space(10.0);
+
+                    // Option 3: Part of Screen / Region (<Shift>Print)
+                    ui.checkbox(
+                        &mut self.replace_region,
+                        RichText::new("📸 Captura de Trecho / Região (<Shift>Print)").strong().size(14.0),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("     Inicia diretamente no modo de seleção de área/recorte interativo.")
+                            .size(11.5)
+                            .color(Color32::from_rgb(170, 170, 180)),
+                    );
+
+                    ui.add_space(10.0);
+
+                    // Option 4: Record Shortcut (<Ctrl><Shift>R)
                     ui.checkbox(
                         &mut self.enable_record,
-                        RichText::new("🎬 Atalho para Gravação de Vídeo (<Ctrl><Shift>R)").strong().size(14.0),
+                        RichText::new("🎬 Gravação de Vídeo (<Ctrl><Shift>R)").strong().size(14.0),
                     );
                     ui.add_space(2.0);
                     ui.label(
@@ -137,11 +179,11 @@ impl eframe::App for SetupWizardApp {
                             .color(Color32::from_rgb(170, 170, 180)),
                     );
 
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
                     ui.separator();
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
 
-                    // Option 3: Autostart & Daemon
+                    // Option 5: Autostart & Daemon
                     ui.checkbox(
                         &mut self.enable_autostart,
                         RichText::new("🚀 Iniciar automaticamente com o sistema (Modo Daemon)").strong().size(14.0),
@@ -153,11 +195,11 @@ impl eframe::App for SetupWizardApp {
                             .color(Color32::from_rgb(170, 170, 180)),
                     );
 
-                    // Option 4: AppImage integration (only if running as AppImage)
+                    // Option 6: AppImage integration (only if running as AppImage)
                     if self.is_appimage {
-                        ui.add_space(12.0);
+                        ui.add_space(10.0);
                         ui.separator();
-                        ui.add_space(8.0);
+                        ui.add_space(6.0);
 
                         ui.checkbox(
                             &mut self.integrate_appimage,
@@ -225,7 +267,7 @@ pub fn run_wizard_window() -> anyhow::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("BenderShot - Assistente de Configuração")
         .with_app_id("bendershot")
-        .with_inner_size([540.0, 500.0])
+        .with_inner_size([560.0, 580.0])
         .with_resizable(false);
 
     if let Some(icon) = icon_data {

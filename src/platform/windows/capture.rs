@@ -10,6 +10,23 @@ pub async fn capture(mode: CaptureMode) -> Result<RgbaImage> {
         .context("Failed to join Windows capture task")?
 }
 
+/// Captures the monitor the overlay was shown on (primary) and crops the selection.
+pub async fn capture_region(sel: crate::capture::RegionSelection) -> Result<RgbaImage> {
+    tokio::task::spawn_blocking(move || {
+        let monitors = Monitor::all().context("Failed to enumerate monitors on Windows")?;
+        let mon = monitors
+            .iter()
+            .find(|m| m.is_primary().unwrap_or(false))
+            .or_else(|| monitors.first())
+            .context("No monitors detected on Windows system")?;
+        let img = mon.capture_image().context("Failed to capture monitor")?;
+        crate::capture::crop_selection_from_desktop(&img, &[], &sel)
+            .context("Seleção de região vazia ou fora da tela")
+    })
+    .await
+    .context("Failed to join Windows capture task")?
+}
+
 fn capture_blocking(mode: CaptureMode) -> Result<RgbaImage> {
     tracing::info!("Triggering Windows screen capture (mode: {:?})", mode);
     match mode {

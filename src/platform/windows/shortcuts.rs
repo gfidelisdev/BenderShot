@@ -6,6 +6,10 @@ use crate::shortcuts::KeybindingConflict;
 #[derive(Serialize, Deserialize, Default)]
 struct SavedShortcuts {
     capture: Option<String>,
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
     record: Option<String>,
 }
 
@@ -83,6 +87,36 @@ impl ShortcutManager {
     pub fn set_binding(new_binding: &str) -> Result<(), String> {
         let mut saved = read_saved_shortcuts();
         saved.capture = Some(new_binding.to_string());
+        let res = write_saved_shortcuts(&saved);
+        notify_tray_daemon_reload();
+        res
+    }
+
+    /// Retrieves current active window keybinding on Windows
+    pub fn get_current_window_binding() -> String {
+        let saved = read_saved_shortcuts();
+        saved.window.unwrap_or_else(|| "Alt+Print".to_string())
+    }
+
+    /// Sets active window keybinding on Windows
+    pub fn set_window_binding(new_binding: &str) -> Result<(), String> {
+        let mut saved = read_saved_shortcuts();
+        saved.window = Some(new_binding.to_string());
+        let res = write_saved_shortcuts(&saved);
+        notify_tray_daemon_reload();
+        res
+    }
+
+    /// Retrieves current region keybinding on Windows
+    pub fn get_current_region_binding() -> String {
+        let saved = read_saved_shortcuts();
+        saved.region.unwrap_or_else(|| "Shift+Print".to_string())
+    }
+
+    /// Sets region keybinding on Windows
+    pub fn set_region_binding(new_binding: &str) -> Result<(), String> {
+        let mut saved = read_saved_shortcuts();
+        saved.region = Some(new_binding.to_string());
         let res = write_saved_shortcuts(&saved);
         notify_tray_daemon_reload();
         res

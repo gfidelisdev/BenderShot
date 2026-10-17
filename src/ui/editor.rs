@@ -51,9 +51,11 @@ enum DragMode {
     AdjustCrop { handle: CropHandle },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShortcutTarget {
     Screenshot,
+    ActiveWindow,
+    Region,
     ScreenRecord,
 }
 
@@ -76,8 +78,12 @@ pub struct EditorApp {
     show_settings_modal: bool,
     recording_shortcut_target: Option<ShortcutTarget>,
     candidate_shortcut: String,
+    candidate_window_shortcut: String,
+    candidate_region_shortcut: String,
     candidate_record_shortcut: String,
     shortcut_conflict: Option<String>,
+    window_shortcut_conflict: Option<String>,
+    region_shortcut_conflict: Option<String>,
     record_shortcut_conflict: Option<String>,
     pub selected_item_index: Option<usize>,
     theme_mode: AdwaitaThemeMode,
@@ -109,14 +115,42 @@ pub struct EditorApp {
 }
 
 impl EditorApp {
-    pub fn new(base_image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Self {
+    pub fn new(
+        base_image: RgbaImage,
+        pin_sender: Option<Sender<RgbaImage>>,
+        mode: crate::capture::CaptureMode,
+    ) -> Self {
+        let (current_tool, status_message) = match mode {
+            crate::capture::CaptureMode::Region => (
+                ToolMode::Crop,
+                Some((
+                    "📸 Modo Trecho: clique e arraste para selecionar a parte da tela que deseja capturar".into(),
+                    std::time::Instant::now(),
+                )),
+            ),
+            crate::capture::CaptureMode::Window => (
+                ToolMode::Arrow,
+                Some((
+                    "🪟 Janela ativa capturada".into(),
+                    std::time::Instant::now(),
+                )),
+            ),
+            crate::capture::CaptureMode::Fullscreen => (
+                ToolMode::Arrow,
+                Some((
+                    "🖥️ Tela cheia capturada".into(),
+                    std::time::Instant::now(),
+                )),
+            ),
+        };
+
         Self {
             base_image,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             texture: None,
             scene: Scene::new(),
-            current_tool: ToolMode::Arrow,
+            current_tool,
             current_color: [224, 27, 36, 255], // Adwaita Red
             stroke_width: 4.0,
             drag_start: None,
@@ -129,8 +163,12 @@ impl EditorApp {
             show_settings_modal: false,
             recording_shortcut_target: None,
             candidate_shortcut: crate::shortcuts::ShortcutManager::get_current_binding(),
+            candidate_window_shortcut: crate::shortcuts::ShortcutManager::get_current_window_binding(),
+            candidate_region_shortcut: crate::shortcuts::ShortcutManager::get_current_region_binding(),
             candidate_record_shortcut: crate::shortcuts::ShortcutManager::get_current_record_binding(),
             shortcut_conflict: None,
+            window_shortcut_conflict: None,
+            region_shortcut_conflict: None,
             record_shortcut_conflict: None,
             selected_item_index: None,
             theme_mode: AdwaitaThemeMode::Dark,
@@ -146,7 +184,7 @@ impl EditorApp {
             last_playback_tick: None,
             frame_cache_dir: None,
             last_cached_idx: 0,
-            status_message: None,
+            status_message,
             pin_sender,
             freehand_smoothing: true,
             freehand_smooth_intensity: 2,
@@ -671,6 +709,14 @@ impl eframe::App for EditorApp {
                         self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
                             .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
                     }
+                    ShortcutTarget::ActiveWindow => {
+                        self.window_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_window_shortcut)
+                            .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                    }
+                    ShortcutTarget::Region => {
+                        self.region_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_region_shortcut)
+                            .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                    }
                     ShortcutTarget::ScreenRecord => {
                         self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
                             .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
@@ -762,6 +808,12 @@ impl eframe::App for EditorApp {
                     match target {
                         ShortcutTarget::Screenshot => {
                             self.candidate_shortcut = binding;
+                        }
+                        ShortcutTarget::ActiveWindow => {
+                            self.candidate_window_shortcut = binding;
+                        }
+                        ShortcutTarget::Region => {
+                            self.candidate_region_shortcut = binding;
                         }
                         ShortcutTarget::ScreenRecord => {
                             self.candidate_record_shortcut = binding;
@@ -1186,8 +1238,14 @@ impl eframe::App for EditorApp {
                         if ui.button("⚙ Configurações").on_hover_text("Configurar atalhos globais de captura").clicked() {
                             self.show_settings_modal = true;
                             self.candidate_shortcut = crate::shortcuts::ShortcutManager::get_current_binding();
+                            self.candidate_window_shortcut = crate::shortcuts::ShortcutManager::get_current_window_binding();
+                            self.candidate_region_shortcut = crate::shortcuts::ShortcutManager::get_current_region_binding();
                             self.candidate_record_shortcut = crate::shortcuts::ShortcutManager::get_current_record_binding();
                             self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
+                                .map(|c| format!("Conflito com: {} ({})", c.key, c.description));
+                            self.window_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_window_shortcut)
+                                .map(|c| format!("Conflito com: {} ({})", c.key, c.description));
+                            self.region_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_region_shortcut)
                                 .map(|c| format!("Conflito com: {} ({})", c.key, c.description));
                             self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
                                 .map(|c| format!("Conflito com: {} ({})", c.key, c.description));
@@ -1963,6 +2021,37 @@ impl eframe::App for EditorApp {
                     painter.circle_filled(pt, corner_handle_r, handle_fill);
                     painter.circle_stroke(pt, corner_handle_r, handle_stroke);
                 }
+
+                // Draw Attached Toolbar with Tick ('✔') and Cancel ('✕') buttons
+                let bar_w = 84.0_f32;
+                let bar_h = 36.0_f32;
+                let mut bar_x = screen_crop_rect.max.x - bar_w;
+                let mut bar_y = screen_crop_rect.max.y + 6.0;
+                if bar_y + bar_h > canvas_rect.max.y {
+                    bar_y = screen_crop_rect.max.y - bar_h - 6.0;
+                }
+                bar_x = bar_x.clamp(canvas_rect.min.x + 4.0, canvas_rect.max.x - bar_w - 4.0);
+                bar_y = bar_y.clamp(canvas_rect.min.y + 4.0, canvas_rect.max.y - bar_h - 4.0);
+                let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(bar_w, bar_h));
+                let c_rect = Rect::from_center_size(Pos2::new(bar_rect.min.x + 20.0, bar_rect.center().y), Vec2::new(28.0, 28.0));
+                let t_rect = Rect::from_center_size(Pos2::new(bar_rect.max.x - 20.0, bar_rect.center().y), Vec2::new(28.0, 28.0));
+
+                painter.rect_filled(bar_rect, Rounding::same(18.0), Color32::from_rgb(32, 32, 40));
+                painter.rect_stroke(bar_rect, Rounding::same(18.0), Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 72)));
+
+                let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                let cancel_hov = pointer_pos.map_or(false, |p| c_rect.contains(p));
+                let tick_hov = pointer_pos.map_or(false, |p| t_rect.contains(p));
+
+                if cancel_hov || tick_hov {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+
+                painter.circle_filled(c_rect.center(), 13.0, if cancel_hov { Color32::from_rgb(224, 27, 36) } else { Color32::from_rgb(50, 50, 60) });
+                painter.text(c_rect.center(), egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(14.0), Color32::WHITE);
+
+                painter.circle_filled(t_rect.center(), 13.0, if tick_hov { Color32::from_rgb(58, 215, 142) } else { Color32::from_rgb(46, 194, 126) });
+                painter.text(t_rect.center(), egui::Align2::CENTER_CENTER, "✔", egui::FontId::proportional(15.0), Color32::WHITE);
             }
 
             // 3. Handle Single Click placement (StepBadge, Inline Text, or Selection)
@@ -1971,6 +2060,35 @@ impl eframe::App for EditorApp {
                     if canvas_rect.contains(click_pos) {
                         let img_x = ((click_pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w);
                         let img_y = ((click_pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h);
+
+                        // If Crop mode and clicked attached tick or cancel buttons
+                        if self.current_tool == ToolMode::Crop && self.crop_selection.is_some() {
+                            let crop = self.crop_selection.unwrap();
+                            let s_min = to_screen([crop.min.x, crop.min.y]);
+                            let s_max = to_screen([crop.max.x, crop.max.y]);
+                            let screen_crop_rect = Rect::from_min_max(s_min, s_max);
+
+                            let bar_w = 84.0_f32;
+                            let bar_h = 36.0_f32;
+                            let mut bar_x = screen_crop_rect.max.x - bar_w;
+                            let mut bar_y = screen_crop_rect.max.y + 6.0;
+                            if bar_y + bar_h > canvas_rect.max.y {
+                                bar_y = screen_crop_rect.max.y - bar_h - 6.0;
+                            }
+                            bar_x = bar_x.clamp(canvas_rect.min.x + 4.0, canvas_rect.max.x - bar_w - 4.0);
+                            bar_y = bar_y.clamp(canvas_rect.min.y + 4.0, canvas_rect.max.y - bar_h - 4.0);
+                            let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(bar_w, bar_h));
+                            let c_rect = Rect::from_center_size(Pos2::new(bar_rect.min.x + 20.0, bar_rect.center().y), Vec2::new(28.0, 28.0));
+                            let t_rect = Rect::from_center_size(Pos2::new(bar_rect.max.x - 20.0, bar_rect.center().y), Vec2::new(28.0, 28.0));
+
+                            if c_rect.contains(click_pos) {
+                                self.crop_selection = None;
+                                return;
+                            } else if t_rect.contains(click_pos) {
+                                self.apply_crop();
+                                return;
+                            }
+                        }
 
                         if self.current_tool == ToolMode::ColorErase {
                             let px = (img_x as u32).min(self.base_image.width() - 1);
@@ -2127,16 +2245,29 @@ impl eframe::App for EditorApp {
                             let screen_rect = Rect::from_min_max(s_min, s_max);
                             let grab_d = 14.0_f32;
 
-                            if pos.distance(screen_rect.left_top()) <= grab_d {
-                                self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::TopLeft };
-                            } else if pos.distance(screen_rect.right_top()) <= grab_d {
-                                self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::TopRight };
-                            } else if pos.distance(screen_rect.left_bottom()) <= grab_d {
-                                self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::BottomLeft };
-                            } else if pos.distance(screen_rect.right_bottom()) <= grab_d {
-                                self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::BottomRight };
-                            } else if screen_rect.contains(pos) {
-                                self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::Inside };
+                            let bar_w = 84.0_f32;
+                            let bar_h = 36.0_f32;
+                            let mut bar_x = screen_rect.max.x - bar_w;
+                            let mut bar_y = screen_rect.max.y + 6.0;
+                            if bar_y + bar_h > canvas_rect.max.y {
+                                bar_y = screen_rect.max.y - bar_h - 6.0;
+                            }
+                            bar_x = bar_x.clamp(canvas_rect.min.x + 4.0, canvas_rect.max.x - bar_w - 4.0);
+                            bar_y = bar_y.clamp(canvas_rect.min.y + 4.0, canvas_rect.max.y - bar_h - 4.0);
+                            let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(bar_w, bar_h));
+
+                            if !bar_rect.contains(pos) {
+                                if pos.distance(screen_rect.left_top()) <= grab_d {
+                                    self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::TopLeft };
+                                } else if pos.distance(screen_rect.right_top()) <= grab_d {
+                                    self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::TopRight };
+                                } else if pos.distance(screen_rect.left_bottom()) <= grab_d {
+                                    self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::BottomLeft };
+                                } else if pos.distance(screen_rect.right_bottom()) <= grab_d {
+                                    self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::BottomRight };
+                                } else if screen_rect.contains(pos) {
+                                    self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::Inside };
+                                }
                             }
                         } else if self.current_tool == ToolMode::Select {
                             let mut handle_drag = None;
@@ -2603,132 +2734,248 @@ impl eframe::App for EditorApp {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.set_width(450.0);
+                    ui.set_width(480.0);
                     ui.heading("Atalhos do Ambiente de Trabalho (DE)");
                     ui.add_space(8.0);
 
-                    // 1. Screenshot Shortcut
-                    ui.label(egui::RichText::new("📷 Atalho para Captura de Tela:").strong());
-                    ui.horizontal(|ui| {
-                        let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::Screenshot);
-                        let btn_label = if is_rec {
-                            "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
-                        } else {
-                            "🎹 Pressionar Teclas para Definir"
-                        };
-                        let btn = egui::Button::new(
-                            egui::RichText::new(btn_label)
-                                .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
-                                .strong(),
-                        )
-                        .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(53, 132, 228) })
-                        .rounding(Rounding::same(6.0));
-
-                        if ui.add(btn).clicked() {
-                            if is_rec {
-                                self.recording_shortcut_target = None;
+                    egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+                        // 1. Screenshot Shortcut (Fullscreen)
+                        ui.label(egui::RichText::new("🖥️ Atalho para Captura de Tela Cheia:").strong());
+                        ui.horizontal(|ui| {
+                            let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::Screenshot);
+                            let btn_label = if is_rec {
+                                "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
                             } else {
-                                self.recording_shortcut_target = Some(ShortcutTarget::Screenshot);
+                                "🎹 Pressionar Teclas para Definir"
+                            };
+                            let btn = egui::Button::new(
+                                egui::RichText::new(btn_label)
+                                    .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
+                                    .strong(),
+                            )
+                            .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(53, 132, 228) })
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn).clicked() {
+                                if is_rec {
+                                    self.recording_shortcut_target = None;
+                                } else {
+                                    self.recording_shortcut_target = Some(ShortcutTarget::Screenshot);
+                                }
                             }
-                        }
 
-                        let response = ui.text_edit_singleline(&mut self.candidate_shortcut);
-                        if response.changed() {
-                            self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
-                                .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
-                        }
-                    });
-
-                    ui.add_space(2.0);
-                    if let Some(ref conflict) = self.shortcut_conflict {
-                        ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
-                    } else {
-                        ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
-                    }
-
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Predefinições comuns para Captura:").italics());
-                    ui.horizontal_wrapped(|ui| {
-                        let mut quick_btn = |label: &str| {
-                            if ui.button(label).clicked() {
-                                self.candidate_shortcut = label.to_string();
+                            let response = ui.text_edit_singleline(&mut self.candidate_shortcut);
+                            if response.changed() {
                                 self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
                                     .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
                             }
-                        };
-                        quick_btn("Ctrl+Print");
-                        quick_btn("<Ctrl>Print");
-                        quick_btn("Ctrl+Shift+S");
-                        quick_btn("<Super><Shift>S");
-                        quick_btn("Print");
-                        quick_btn("<Shift>Print");
-                    });
+                        });
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    // 2. Screen Recording Shortcut
-                    ui.label(egui::RichText::new("🎥 Atalho para Iniciar / Parar Gravação de Vídeo:").strong());
-                    ui.horizontal(|ui| {
-                        let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::ScreenRecord);
-                        let btn_label = if is_rec {
-                            "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
+                        ui.add_space(2.0);
+                        if let Some(ref conflict) = self.shortcut_conflict {
+                            ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
                         } else {
-                            "🎹 Pressionar Teclas para Definir"
-                        };
-                        let btn = egui::Button::new(
-                            egui::RichText::new(btn_label)
-                                .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
-                                .strong(),
-                        )
-                        .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(46, 194, 126) })
-                        .rounding(Rounding::same(6.0));
-
-                        if ui.add(btn).clicked() {
-                            if is_rec {
-                                self.recording_shortcut_target = None;
-                            } else {
-                                self.recording_shortcut_target = Some(ShortcutTarget::ScreenRecord);
-                            }
+                            ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
                         }
 
-                        let response_rec = ui.text_edit_singleline(&mut self.candidate_record_shortcut);
-                        if response_rec.changed() {
-                            self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
-                                .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
-                        }
-                    });
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Predefinições comuns para Tela Cheia:").italics());
+                        ui.horizontal_wrapped(|ui| {
+                            let mut quick_btn = |label: &str| {
+                                if ui.button(label).clicked() {
+                                    self.candidate_shortcut = label.to_string();
+                                    self.shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_shortcut)
+                                        .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                                }
+                            };
+                            quick_btn("Print");
+                            quick_btn("Ctrl+Print");
+                            quick_btn("<Ctrl>Print");
+                            quick_btn("<Super><Shift>S");
+                        });
 
-                    ui.add_space(2.0);
-                    if let Some(ref conflict) = self.record_shortcut_conflict {
-                        ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
-                    } else {
-                        ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
-                    }
-
-                    if self.recording_shortcut_target.is_some() {
+                        ui.add_space(10.0);
+                        ui.separator();
                         ui.add_space(6.0);
-                        ui.colored_label(
-                            Color32::from_rgb(255, 120, 0),
-                            "👉 Pressione no teclado a combinação desejada. Tecle ENTER para confirmar ou ESC para cancelar.",
-                        );
-                    }
 
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Predefinições comuns para Gravação:").italics());
-                    ui.horizontal_wrapped(|ui| {
-                        let mut quick_btn = |label: &str| {
-                            if ui.button(label).clicked() {
-                                self.candidate_record_shortcut = label.to_string();
+                        // 2. Active Window Shortcut
+                        ui.label(egui::RichText::new("🪟 Atalho para Captura de Janela Ativa:").strong());
+                        ui.horizontal(|ui| {
+                            let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::ActiveWindow);
+                            let btn_label = if is_rec {
+                                "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
+                            } else {
+                                "🎹 Pressionar Teclas para Definir"
+                            };
+                            let btn = egui::Button::new(
+                                egui::RichText::new(btn_label)
+                                    .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
+                                    .strong(),
+                            )
+                            .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(53, 132, 228) })
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn).clicked() {
+                                if is_rec {
+                                    self.recording_shortcut_target = None;
+                                } else {
+                                    self.recording_shortcut_target = Some(ShortcutTarget::ActiveWindow);
+                                }
+                            }
+
+                            let response_win = ui.text_edit_singleline(&mut self.candidate_window_shortcut);
+                            if response_win.changed() {
+                                self.window_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_window_shortcut)
+                                    .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                            }
+                        });
+
+                        ui.add_space(2.0);
+                        if let Some(ref conflict) = self.window_shortcut_conflict {
+                            ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
+                        } else {
+                            ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
+                        }
+
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Predefinições comuns para Janela Ativa:").italics());
+                        ui.horizontal_wrapped(|ui| {
+                            let mut quick_btn = |label: &str| {
+                                if ui.button(label).clicked() {
+                                    self.candidate_window_shortcut = label.to_string();
+                                    self.window_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_window_shortcut)
+                                        .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                                }
+                            };
+                            quick_btn("<Alt>Print");
+                            quick_btn("Alt+Print");
+                            quick_btn("<Super><Alt>Print");
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        // 3. Region Shortcut (Parte da Tela)
+                        ui.label(egui::RichText::new("📸 Atalho para Captura de Parte da Tela (Região):").strong());
+                        ui.horizontal(|ui| {
+                            let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::Region);
+                            let btn_label = if is_rec {
+                                "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
+                            } else {
+                                "🎹 Pressionar Teclas para Definir"
+                            };
+                            let btn = egui::Button::new(
+                                egui::RichText::new(btn_label)
+                                    .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
+                                    .strong(),
+                            )
+                            .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(53, 132, 228) })
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn).clicked() {
+                                if is_rec {
+                                    self.recording_shortcut_target = None;
+                                } else {
+                                    self.recording_shortcut_target = Some(ShortcutTarget::Region);
+                                }
+                            }
+
+                            let response_reg = ui.text_edit_singleline(&mut self.candidate_region_shortcut);
+                            if response_reg.changed() {
+                                self.region_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_region_shortcut)
+                                    .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                            }
+                        });
+
+                        ui.add_space(2.0);
+                        if let Some(ref conflict) = self.region_shortcut_conflict {
+                            ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
+                        } else {
+                            ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
+                        }
+
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Predefinições comuns para Parte da Tela:").italics());
+                        ui.horizontal_wrapped(|ui| {
+                            let mut quick_btn = |label: &str| {
+                                if ui.button(label).clicked() {
+                                    self.candidate_region_shortcut = label.to_string();
+                                    self.region_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_region_shortcut)
+                                        .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                                }
+                            };
+                            quick_btn("<Shift>Print");
+                            quick_btn("Shift+Print");
+                            quick_btn("<Ctrl><Shift>Print");
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        // 4. Screen Recording Shortcut
+                        ui.label(egui::RichText::new("🎥 Atalho para Iniciar / Parar Gravação de Vídeo:").strong());
+                        ui.horizontal(|ui| {
+                            let is_rec = self.recording_shortcut_target == Some(ShortcutTarget::ScreenRecord);
+                            let btn_label = if is_rec {
+                                "🔴 Pressione as teclas... (Enter confirma, Esc descarta)"
+                            } else {
+                                "🎹 Pressionar Teclas para Definir"
+                            };
+                            let btn = egui::Button::new(
+                                egui::RichText::new(btn_label)
+                                    .color(if is_rec { Color32::from_rgb(255, 120, 0) } else { Color32::WHITE })
+                                    .strong(),
+                            )
+                            .fill(if is_rec { Color32::from_rgb(70, 30, 20) } else { Color32::from_rgb(46, 194, 126) })
+                            .rounding(Rounding::same(6.0));
+
+                            if ui.add(btn).clicked() {
+                                if is_rec {
+                                    self.recording_shortcut_target = None;
+                                } else {
+                                    self.recording_shortcut_target = Some(ShortcutTarget::ScreenRecord);
+                                }
+                            }
+
+                            let response_rec = ui.text_edit_singleline(&mut self.candidate_record_shortcut);
+                            if response_rec.changed() {
                                 self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
                                     .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
                             }
-                        };
-                        quick_btn("<Ctrl>Print");
-                        quick_btn("<Ctrl><Shift>R");
-                        quick_btn("<Super><Alt>R");
-                        quick_btn("<Control><Alt>v");
+                        });
+
+                        ui.add_space(2.0);
+                        if let Some(ref conflict) = self.record_shortcut_conflict {
+                            ui.colored_label(Color32::from_rgb(224, 27, 36), conflict);
+                        } else {
+                            ui.colored_label(Color32::from_rgb(46, 194, 126), "✔ Nenhum conflito detectado");
+                        }
+
+                        if self.recording_shortcut_target.is_some() {
+                            ui.add_space(6.0);
+                            ui.colored_label(
+                                Color32::from_rgb(255, 120, 0),
+                                "👉 Pressione no teclado a combinação desejada. Tecle ENTER para confirmar ou ESC para cancelar.",
+                            );
+                        }
+
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Predefinições comuns para Gravação:").italics());
+                        ui.horizontal_wrapped(|ui| {
+                            let mut quick_btn = |label: &str| {
+                                if ui.button(label).clicked() {
+                                    self.candidate_record_shortcut = label.to_string();
+                                    self.record_shortcut_conflict = crate::shortcuts::ShortcutManager::detect_conflict(&self.candidate_record_shortcut)
+                                        .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+                                }
+                            };
+                            quick_btn("<Ctrl><Shift>R");
+                            quick_btn("<Ctrl>Print");
+                            quick_btn("<Super><Alt>R");
+                            quick_btn("<Control><Alt>v");
+                        });
                     });
 
                     ui.add_space(14.0);
@@ -2738,6 +2985,14 @@ impl eframe::App for EditorApp {
                             let mut ok = true;
                             if let Err(e) = crate::shortcuts::ShortcutManager::set_binding(&self.candidate_shortcut) {
                                 self.set_status(format!("Erro ao definir atalho de captura: {}", e));
+                                ok = false;
+                            }
+                            if let Err(e) = crate::shortcuts::ShortcutManager::set_window_binding(&self.candidate_window_shortcut) {
+                                self.set_status(format!("Erro ao definir atalho de janela: {}", e));
+                                ok = false;
+                            }
+                            if let Err(e) = crate::shortcuts::ShortcutManager::set_region_binding(&self.candidate_region_shortcut) {
+                                self.set_status(format!("Erro ao definir atalho de trecho: {}", e));
                                 ok = false;
                             }
                             if let Err(e) = crate::shortcuts::ShortcutManager::set_record_binding(&self.candidate_record_shortcut) {
@@ -2767,7 +3022,11 @@ impl eframe::App for EditorApp {
     }
 }
 
-pub fn run_editor(image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Result<(), eframe::Error> {
+pub fn run_editor(
+    image: RgbaImage,
+    pin_sender: Option<Sender<RgbaImage>>,
+    mode: crate::capture::CaptureMode,
+) -> Result<(), eframe::Error> {
     let width = (image.width() as f32).clamp(700.0, 1600.0) + 220.0; // Extra room for layers panel
     let height = (image.height() as f32).clamp(500.0, 1000.0) + 100.0;
 
@@ -2788,7 +3047,7 @@ pub fn run_editor(image: RgbaImage, pin_sender: Option<Sender<RgbaImage>>) -> Re
     eframe::run_native(
         "bendershot",
         options,
-        Box::new(|_cc| Ok(Box::new(EditorApp::new(image, pin_sender)))),
+        Box::new(move |_cc| Ok(Box::new(EditorApp::new(image, pin_sender, mode)))),
     )
 }
 
@@ -2818,7 +3077,7 @@ pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Er
         "bendershot",
         options,
         Box::new(move |_cc| {
-            let mut app = EditorApp::new(initial_frame, None);
+            let mut app = EditorApp::new(initial_frame, None, crate::capture::CaptureMode::Fullscreen);
             app.video_source_path = Some(video_path);
             app.video_duration_ms = duration_ms;
             app.current_time_ms = 0;

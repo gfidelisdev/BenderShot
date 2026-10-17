@@ -133,32 +133,37 @@ impl ShortcutManager {
         // 1. Clean up legacy bindings (e.g. enhanced-shot) and conflicting duplicates
         cleanup_legacy_keybindings();
         unbind_conflicting_custom_shortcuts(new_binding, custom_path);
+        unbind_conflicting_system_shortcuts(new_binding);
 
-        if new_binding == "Print" {
-            // Disable all GNOME native screenshot shortcuts to prevent Mutter from capturing Print
-            let _ = Command::new("gsettings")
-                .args(["set", "org.gnome.shell.keybindings", "show-screenshot-ui", "[]"])
-                .output();
-            let _ = Command::new("gsettings")
-                .args(["set", "org.gnome.shell.keybindings", "screenshot", "[]"])
-                .output();
-            let _ = Command::new("gsettings")
-                .args(["set", "org.gnome.shell.keybindings", "screenshot-window", "[]"])
-                .output();
-        }
+        // Disable all GNOME native screenshot shortcuts to prevent Mutter from capturing Print
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "show-screenshot-ui", "[]"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "screenshot", "[]"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "screenshot-window", "[]"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.settings-daemon.plugins.media-keys", "screenshot", "['']"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.settings-daemon.plugins.media-keys", "screenshot-clip", "['']"])
+            .output();
 
         // To ensure gsd-media-keys notices the changes (especially if the path was already in the list),
         // we momentarily remove custom_path from the list if present.
         remove_custom_path_from_list(custom_path);
 
         let exe = get_executable_command();
-        let cmd = format!("{} region", exe);
+        let cmd = format!("{} full", exe);
         let _ = Command::new("gsettings")
             .args([
                 "set",
                 &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
                 "name",
-                "BenderShot Captura",
+                "BenderShot Captura Tela Inteira",
             ])
             .output();
         let _ = Command::new("gsettings")
@@ -189,6 +194,174 @@ impl ShortcutManager {
             Ok(())
         } else {
             Err("Falha ao executar gsettings".into())
+        }
+    }
+
+    /// Retrieves current BenderShot active window keybinding registered in the DE
+    pub fn get_current_window_binding() -> String {
+        for custom_path in [
+            "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot-window/",
+        ] {
+            if let Ok(out) = Command::new("gsettings")
+                .args([
+                    "get",
+                    &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                    "binding",
+                ])
+                .output()
+            {
+                if out.status.success() {
+                    let s = String::from_utf8_lossy(&out.stdout).trim().trim_matches('\'').to_string();
+                    if !s.is_empty() && s != "@as []" {
+                        return s;
+                    }
+                }
+            }
+        }
+        "<Alt>Print".to_string()
+    }
+
+    /// Sets BenderShot active window shortcut in GNOME
+    pub fn set_window_binding(new_binding: &str) -> Result<(), String> {
+        let custom_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot-window/";
+
+        crate::platform::linux::capture::ensure_portal_permissions();
+        cleanup_legacy_keybindings();
+        unbind_conflicting_custom_shortcuts(new_binding, custom_path);
+        unbind_conflicting_system_shortcuts(new_binding);
+
+        // Explicitly overwrite GNOME's native window capture shortcuts
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "screenshot-window", "[]"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.settings-daemon.plugins.media-keys", "window-screenshot", "['']"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.settings-daemon.plugins.media-keys", "window-screenshot-clip", "['']"])
+            .output();
+
+        remove_custom_path_from_list(custom_path);
+
+        let exe = get_executable_command();
+        let cmd = format!("{} window", exe);
+        let _ = Command::new("gsettings")
+            .args([
+                "set",
+                &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                "name",
+                "BenderShot Capturar Janela",
+            ])
+            .output();
+        let _ = Command::new("gsettings")
+            .args([
+                "set",
+                &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                "command",
+                &cmd,
+            ])
+            .output();
+        let status = Command::new("gsettings")
+            .args([
+                "set",
+                &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                "binding",
+                new_binding,
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        add_custom_path_to_list(custom_path);
+        reload_media_keys_daemon();
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Falha ao executar gsettings para atalho de janela".into())
+        }
+    }
+
+    /// Retrieves current BenderShot region keybinding registered in the DE
+    pub fn get_current_region_binding() -> String {
+        for custom_path in [
+            "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot-region/",
+        ] {
+            if let Ok(out) = Command::new("gsettings")
+                .args([
+                    "get",
+                    &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                    "binding",
+                ])
+                .output()
+            {
+                if out.status.success() {
+                    let s = String::from_utf8_lossy(&out.stdout).trim().trim_matches('\'').to_string();
+                    if !s.is_empty() && s != "@as []" {
+                        return s;
+                    }
+                }
+            }
+        }
+        "<Shift>Print".to_string()
+    }
+
+    /// Sets BenderShot region shortcut in GNOME
+    pub fn set_region_binding(new_binding: &str) -> Result<(), String> {
+        let custom_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/bendershot-region/";
+
+        crate::platform::linux::capture::ensure_portal_permissions();
+        cleanup_legacy_keybindings();
+        unbind_conflicting_custom_shortcuts(new_binding, custom_path);
+        unbind_conflicting_system_shortcuts(new_binding);
+
+        // Explicitly overwrite GNOME's native region/screenshot shortcuts
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "screenshot", "[]"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.settings-daemon.plugins.media-keys", "area-screenshot", "['']"])
+            .output();
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.settings-daemon.plugins.media-keys", "area-screenshot-clip", "['']"])
+            .output();
+
+        remove_custom_path_from_list(custom_path);
+
+        let exe = get_executable_command();
+        let cmd = format!("{} region", exe);
+        let _ = Command::new("gsettings")
+            .args([
+                "set",
+                &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                "name",
+                "BenderShot Capturar Região",
+            ])
+            .output();
+        let _ = Command::new("gsettings")
+            .args([
+                "set",
+                &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                "command",
+                &cmd,
+            ])
+            .output();
+        let status = Command::new("gsettings")
+            .args([
+                "set",
+                &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", custom_path),
+                "binding",
+                new_binding,
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        add_custom_path_to_list(custom_path);
+        reload_media_keys_daemon();
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Falha ao executar gsettings para atalho de região".into())
         }
     }
 
@@ -460,12 +633,11 @@ impl ShortcutManager {
 
         cleanup_legacy_keybindings();
         unbind_conflicting_custom_shortcuts(new_binding, custom_path);
+        unbind_conflicting_system_shortcuts(new_binding);
 
-        if normalize_shortcut(new_binding) == "<ctrl><shift><alt>r" {
-            let _ = Command::new("gsettings")
-                .args(["set", "org.gnome.shell.keybindings", "show-screen-recording-ui", "[]"])
-                .output();
-        }
+        let _ = Command::new("gsettings")
+            .args(["set", "org.gnome.shell.keybindings", "show-screen-recording-ui", "[]"])
+            .output();
 
         remove_custom_path_from_list(custom_path);
 
@@ -626,8 +798,12 @@ fn cleanup_legacy_keybindings() {
                         if cmd_str.contains("%f") || cmd_str.contains(".local/bin") {
                             let correct_cmd = if path.contains("record") {
                                 format!("{} record", get_executable_command())
-                            } else {
+                            } else if path.contains("window") {
+                                format!("{} window", get_executable_command())
+                            } else if path.contains("region") {
                                 format!("{} region", get_executable_command())
+                            } else {
+                                format!("{} full", get_executable_command())
                             };
                             let _ = Command::new("gsettings")
                                 .args(["set", &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", path), "command", &correct_cmd])
@@ -697,4 +873,45 @@ fn normalize_shortcut(s: &str) -> String {
         .replace("primary", "ctrl")
         .trim()
         .to_string()
+}
+
+pub fn unbind_conflicting_system_shortcuts(candidate_binding: &str) {
+    let norm_candidate = normalize_shortcut(candidate_binding);
+    if norm_candidate.is_empty() {
+        return;
+    }
+
+    let schemas = [
+        "org.gnome.shell.keybindings",
+        "org.gnome.desktop.wm.keybindings",
+        "org.gnome.settings-daemon.plugins.media-keys",
+    ];
+
+    for schema in schemas {
+        if let Ok(output) = Command::new("gsettings")
+            .args(["list-recursively", schema])
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        let key = parts[1];
+                        let raw_val = parts[2..].join(" ");
+                        if normalize_shortcut(&raw_val).contains(&norm_candidate) {
+                            let empty_val = if raw_val.starts_with('[') || raw_val.starts_with("@as [") {
+                                "[]"
+                            } else {
+                                "''"
+                            };
+                            let _ = Command::new("gsettings")
+                                .args(["set", schema, key, empty_val])
+                                .output();
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

@@ -23,7 +23,7 @@ impl Tray for BenderShotTray {
 
         vec![
             StandardItem {
-                label: "📸 Capturar Região".into(),
+                label: "📸 Capturar Parte da Tela (<Shift>Print)".into(),
                 activate: Box::new(|_| {
                     spawn_capture(CaptureMode::Region);
                 }),
@@ -31,7 +31,7 @@ impl Tray for BenderShotTray {
             }
             .into(),
             StandardItem {
-                label: "🖥️ Capturar Tela Cheia".into(),
+                label: "🖥️ Capturar Tela Cheia (Print)".into(),
                 activate: Box::new(|_| {
                     spawn_capture(CaptureMode::Fullscreen);
                 }),
@@ -39,7 +39,7 @@ impl Tray for BenderShotTray {
             }
             .into(),
             StandardItem {
-                label: "🪟 Capturar Janela".into(),
+                label: "🪟 Capturar Janela Ativa (<Alt>Print)".into(),
                 activate: Box::new(|_| {
                     spawn_capture(CaptureMode::Window);
                 }),
@@ -153,6 +153,8 @@ pub async fn run_indicator() -> anyhow::Result<()> {
     if !crate::config::AppConfig::is_setup_completed() {
         tracing::info!("First run of BenderShot daemon detected. Auto-configuring GNOME shortcuts...");
         let _ = crate::shortcuts::ShortcutManager::set_binding("Print");
+        let _ = crate::shortcuts::ShortcutManager::set_window_binding("<Alt>Print");
+        let _ = crate::shortcuts::ShortcutManager::set_region_binding("<Shift>Print");
         let _ = crate::shortcuts::ShortcutManager::set_record_binding("<Ctrl><Shift>R");
         let _ = crate::shortcuts::ShortcutManager::configure_autostart(true);
         crate::config::AppConfig::mark_setup_completed();

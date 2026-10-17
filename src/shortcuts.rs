@@ -21,6 +21,22 @@ impl ShortcutManager {
         crate::platform::imp::shortcuts::ShortcutManager::set_binding(new_binding)
     }
 
+    pub fn get_current_window_binding() -> String {
+        crate::platform::imp::shortcuts::ShortcutManager::get_current_window_binding()
+    }
+
+    pub fn set_window_binding(new_binding: &str) -> Result<(), String> {
+        crate::platform::imp::shortcuts::ShortcutManager::set_window_binding(new_binding)
+    }
+
+    pub fn get_current_region_binding() -> String {
+        crate::platform::imp::shortcuts::ShortcutManager::get_current_region_binding()
+    }
+
+    pub fn set_region_binding(new_binding: &str) -> Result<(), String> {
+        crate::platform::imp::shortcuts::ShortcutManager::set_region_binding(new_binding)
+    }
+
     pub fn get_current_record_binding() -> String {
         crate::platform::imp::shortcuts::ShortcutManager::get_current_record_binding()
     }
