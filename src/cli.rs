@@ -43,6 +43,21 @@ pub enum Commands {
     /// Non-interactive automated setup (enables default shortcuts, autostart, and daemon)
     AutoSetup,
 
+    /// Check for updates on GitHub and offer to update to the latest release
+    Update {
+        /// Only check if an update is available without installing
+        #[arg(long, short = 'c')]
+        check: bool,
+
+        /// Open graphical update dialog window
+        #[arg(long, short = 'g')]
+        gui: bool,
+
+        /// Automatically proceed with update without interactive confirmation
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
     #[command(hide = true)]
     RecordWorker,
 }

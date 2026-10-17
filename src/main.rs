@@ -112,6 +112,65 @@ async fn main() -> Result<()> {
         Commands::Settings => {
             ui::run_settings_window().map_err(|e| anyhow::anyhow!("{e:?}"))?;
         }
+        Commands::Update { check, gui, yes } => {
+            if gui {
+                ui::run_updater_window().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                return Ok(());
+            }
+
+            let current_ver = bendershot::config::AppConfig::get_effective_version();
+            let method = bendershot::updater::detect_install_method();
+            println!("==> BenderShot Updater");
+            println!("Versão instalada: {}", current_ver);
+            println!("Método de instalação: {}", method);
+            println!("Consultando lançamentos no GitHub...");
+
+            match bendershot::updater::check_for_updates() {
+                Ok(Some(release)) => {
+                    println!("\n✨ Nova versão disponível: {} (atual: {})", release.tag_name, current_ver);
+                    if let Some(body) = &release.body {
+                        println!("\n--- Notas de Versão ---");
+                        println!("{}", body.trim());
+                        println!("-----------------------");
+                    }
+
+                    if check {
+                        println!("\nPara atualizar, execute: bendershot update");
+                        return Ok(());
+                    }
+
+                    let should_proceed = if yes {
+                        true
+                    } else {
+                        print!("\nDeseja instalar a versão {} agora? [S/n]: ", release.tag_name);
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        let ans = input.trim().to_lowercase();
+                        ans.is_empty() || ans == "s" || ans == "sim" || ans == "y" || ans == "yes"
+                    };
+
+                    if should_proceed {
+                        println!("\nIniciando atualização...");
+                        bendershot::updater::perform_in_place_update(&release, |msg| {
+                            println!("  [i] {}", msg);
+                        })
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        println!("\n✔ Atualização para {} concluída com sucesso!", release.tag_name);
+                    } else {
+                        println!("Atualização cancelada pelo usuário.");
+                    }
+                }
+                Ok(None) => {
+                    println!("✔ O BenderShot já está na versão mais recente ({}).", current_ver);
+                }
+                Err(e) => {
+                    eprintln!("Erro ao verificar atualizações: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 
     Ok(())

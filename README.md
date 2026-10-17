@@ -117,8 +117,14 @@ bendershot record
 # Iniciar o daemon residente em segundo plano (com ícone na bandeja)
 bendershot daemon
 
-# Abrir uma imagem ou vídeo diretamente no editor
-bendershot edit /caminho/para/arquivo.png
+# Abrir configurações de atalhos e preferências
+bendershot settings
+
+# Verificar e atualizar para a versão mais recente do GitHub
+bendershot update          # Interativo via terminal
+bendershot update --check  # Apenas checar versão disponível
+bendershot update --gui    # Abrir interface gráfica dedicada
+bendershot update -y       # Atualizar automaticamente in-place
 
 # Assistente de configuração inicial interativo (Wizard)
 bendershot wizard

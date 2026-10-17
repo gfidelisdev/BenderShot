@@ -2,12 +2,24 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub setup_completed: bool,
     pub autostart_enabled: bool,
     pub capture_shortcut: String,
     pub record_shortcut: String,
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    #[serde(default)]
+    pub last_update_check_epoch: u64,
+    #[serde(default)]
+    pub latest_known_tag: Option<String>,
+    #[serde(default)]
+    pub installed_version_override: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -20,6 +32,10 @@ impl Default for AppConfig {
             #[cfg(target_os = "windows")]
             capture_shortcut: "<Ctrl>Print".to_string(),
             record_shortcut: "<Ctrl><Shift>R".to_string(),
+            auto_check_updates: true,
+            last_update_check_epoch: 0,
+            latest_known_tag: None,
+            installed_version_override: None,
         }
     }
 }
@@ -59,6 +75,33 @@ impl AppConfig {
     pub fn mark_setup_completed() {
         let mut cfg = Self::load();
         cfg.setup_completed = true;
+        let _ = cfg.save();
+    }
+
+    pub fn get_effective_version() -> String {
+        let cfg = Self::load();
+        if let Some(installed) = cfg.installed_version_override {
+            if !installed.is_empty() {
+                return installed;
+            }
+        }
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+
+    pub fn set_installed_version(tag: &str) {
+        let mut cfg = Self::load();
+        cfg.installed_version_override = Some(tag.to_string());
+        cfg.latest_known_tag = None;
+        let _ = cfg.save();
+    }
+
+    pub fn record_update_check(latest_tag: Option<String>) {
+        let mut cfg = Self::load();
+        cfg.last_update_check_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        cfg.latest_known_tag = latest_tag;
         let _ = cfg.save();
     }
 }

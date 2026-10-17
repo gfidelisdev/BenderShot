@@ -72,6 +72,14 @@ impl Tray for BenderShotTray {
                 ..Default::default()
             }
             .into(),
+            StandardItem {
+                label: "🔄 Verificar Atualizações".into(),
+                activate: Box::new(|_| {
+                    spawn_update();
+                }),
+                ..Default::default()
+            }
+            .into(),
             MenuItem::Separator,
             StandardItem {
                 label: "❌ Sair".into(),
@@ -103,6 +111,11 @@ fn spawn_record() {
 fn spawn_settings() {
     let exe = crate::platform::linux::shortcuts::get_executable_command();
     let _ = Command::new(exe).arg("settings").spawn();
+}
+
+fn spawn_update() {
+    let exe = crate::platform::linux::shortcuts::get_executable_command();
+    let _ = Command::new(exe).args(["update", "--gui"]).spawn();
 }
 
 fn spawn_wizard() {
@@ -148,6 +161,24 @@ pub async fn run_indicator() -> anyhow::Result<()> {
             "BenderShot está ativo na bandeja! Pressione PrintScreen para capturar a tela.",
         );
     }
+
+    // Spawn periodic background update checker (every 12 hours)
+    tokio::spawn(async move {
+        // Initial delay so system startup isn't congested
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        loop {
+            let cfg = crate::config::AppConfig::load();
+            if cfg.auto_check_updates {
+                if let Ok(Some(release)) = crate::updater::check_for_updates() {
+                    crate::shortcuts::ShortcutManager::send_notification(
+                        "BenderShot - Atualização Disponível",
+                        &format!("Nova versão {} disponível! Abra as Configurações ou a Bandeja para atualizar.", release.tag_name),
+                    );
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(12 * 3600)).await;
+        }
+    });
 
     match BenderShotTray.spawn().await {
         Ok(_handle) => {

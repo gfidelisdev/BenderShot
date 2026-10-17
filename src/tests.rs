@@ -529,5 +529,135 @@ fn test_linux_capture_process_and_pid_lifecycle() {
     assert!(!pid_file.exists());
 }
 
+#[test]
+fn test_version_parsing_and_comparison() {
+    use crate::updater::{is_newer_version, parse_version};
 
+    assert_eq!(parse_version("v0.1.4"), vec![0, 1, 4]);
+    assert_eq!(parse_version("V0.2.2.2"), vec![0, 2, 2, 2]);
+    assert_eq!(parse_version("0.2.3"), vec![0, 2, 3]);
+    assert_eq!(parse_version("1.0.0-beta"), vec![1, 0, 0]);
 
+    // Newer tests
+    assert!(is_newer_version("0.1.4", "v0.2.2.2"));
+    assert!(is_newer_version("0.2.2.1", "0.2.2.2"));
+    assert!(is_newer_version("v0.2.2.2", "0.2.3"));
+    assert!(is_newer_version("0.9.9.9", "1.0.0"));
+    assert!(is_newer_version("0.2.2", "0.2.2.1"));
+
+    // Not newer tests
+    assert!(!is_newer_version("0.2.2.2", "0.2.2.2"));
+    assert!(!is_newer_version("0.2.2.2", "v0.2.2.1"));
+    assert!(!is_newer_version("0.2.3", "0.2.2.2"));
+    assert!(!is_newer_version("1.0.0", "0.9.9"));
+    assert!(!is_newer_version("v0.2.3", "0.2.3"));
+}
+
+#[test]
+fn test_select_release_assets() {
+    use crate::updater::{select_asset, InstallMethod, ReleaseAsset};
+    use std::path::PathBuf;
+
+    let assets = vec![
+        ReleaseAsset {
+            name: "bendershot-0.2.3-1.x86_64.rpm".into(),
+            browser_download_url: "https://example.com/bendershot.rpm".into(),
+            size: Some(12345),
+        },
+        ReleaseAsset {
+            name: "bendershot-0.2.3-linux-x86_64.tar.gz".into(),
+            browser_download_url: "https://example.com/bendershot.tar.gz".into(),
+            size: Some(23456),
+        },
+        ReleaseAsset {
+            name: "bendershot-0.2.3-x86_64.AppImage".into(),
+            browser_download_url: "https://example.com/bendershot.AppImage".into(),
+            size: Some(34567),
+        },
+        ReleaseAsset {
+            name: "BenderShot-Setup-x64.exe".into(),
+            browser_download_url: "https://example.com/setup.exe".into(),
+            size: Some(45678),
+        },
+        ReleaseAsset {
+            name: "bendershot_0.2.3_amd64.deb".into(),
+            browser_download_url: "https://example.com/bendershot.deb".into(),
+            size: Some(56789),
+        },
+    ];
+
+    // AppImage
+    let appimage_asset = select_asset(&assets, &InstallMethod::AppImage(PathBuf::from("/path/to/app.AppImage"))).unwrap();
+    assert_eq!(appimage_asset.name, "bendershot-0.2.3-x86_64.AppImage");
+
+    // System Deb
+    let deb_asset = select_asset(&assets, &InstallMethod::SystemDeb).unwrap();
+    assert_eq!(deb_asset.name, "bendershot_0.2.3_amd64.deb");
+
+    // System Rpm
+    let rpm_asset = select_asset(&assets, &InstallMethod::SystemRpm).unwrap();
+    assert_eq!(rpm_asset.name, "bendershot-0.2.3-1.x86_64.rpm");
+
+    // Standalone Binary
+    let standalone_asset = select_asset(&assets, &InstallMethod::StandaloneBinary(PathBuf::from("/home/user/.local/bin/bendershot"))).unwrap();
+    assert_eq!(standalone_asset.name, "bendershot-0.2.3-linux-x86_64.tar.gz");
+
+    // Windows Installer
+    let win_asset = select_asset(&assets, &InstallMethod::WindowsInstaller).unwrap();
+    assert_eq!(win_asset.name, "BenderShot-Setup-x64.exe");
+}
+
+#[test]
+fn test_release_info_deserialization() {
+    use crate::updater::ReleaseInfo;
+
+    let json_data = r#"{
+        "tag_name": "v0.2.2.2",
+        "name": "v0.2.2.2",
+        "body": "Fixes and improvements",
+        "html_url": "https://github.com/gfidelisdev/BenderShot/releases/tag/v0.2.2.2",
+        "assets": [
+            {
+                "name": "bendershot-0.2.2.2-x86_64.AppImage",
+                "browser_download_url": "https://github.com/gfidelisdev/BenderShot/releases/download/v0.2.2.2/bendershot-0.2.2.2-x86_64.AppImage",
+                "size": 15000000
+            }
+        ]
+    }"#;
+
+    let info: ReleaseInfo = serde_json::from_str(json_data).unwrap();
+    assert_eq!(info.tag_name, "v0.2.2.2");
+    assert_eq!(info.assets.len(), 1);
+    assert_eq!(info.assets[0].name, "bendershot-0.2.2.2-x86_64.AppImage");
+}
+
+#[test]
+fn test_app_config_update_fields_serde() {
+    use crate::config::AppConfig;
+
+    // Test legacy JSON without update fields deserializes smoothly with defaults
+    let legacy_json = r#"{
+        "setup_completed": true,
+        "autostart_enabled": true,
+        "capture_shortcut": "Print",
+        "record_shortcut": "<Ctrl><Shift>R"
+    }"#;
+
+    let cfg: AppConfig = serde_json::from_str(legacy_json).unwrap();
+    assert!(cfg.auto_check_updates);
+    assert_eq!(cfg.last_update_check_epoch, 0);
+    assert_eq!(cfg.latest_known_tag, None);
+    assert_eq!(cfg.installed_version_override, None);
+
+    // Test serializing and deserializing roundtrip
+    let mut updated_cfg = cfg.clone();
+    updated_cfg.auto_check_updates = false;
+    updated_cfg.latest_known_tag = Some("v0.2.2.2".into());
+    updated_cfg.installed_version_override = Some("v0.2.2.2".into());
+
+    let serialized = serde_json::to_string(&updated_cfg).unwrap();
+    let reloaded: AppConfig = serde_json::from_str(&serialized).unwrap();
+    assert!(!reloaded.auto_check_updates);
+    assert_eq!(reloaded.latest_known_tag, Some("v0.2.2.2".into()));
+    assert_eq!(reloaded.installed_version_override, Some("v0.2.2.2".into()));
+}

@@ -11,16 +11,25 @@ pub struct SettingsApp {
     recording_shortcut_target: Option<ShortcutTarget>,
     status_message: Option<(String, std::time::Instant)>,
     theme_mode: AdwaitaThemeMode,
+    auto_check_updates: bool,
+    update_check_status: Option<String>,
+    available_release: Option<crate::updater::ReleaseInfo>,
+    is_checking_updates: bool,
+    update_rx: std::sync::mpsc::Receiver<Result<Option<crate::updater::ReleaseInfo>, String>>,
+    update_tx: std::sync::mpsc::Sender<Result<Option<crate::updater::ReleaseInfo>, String>>,
 }
 
 impl SettingsApp {
     pub fn new() -> Self {
+        let cfg = crate::config::AppConfig::load();
         let candidate_shortcut = ShortcutManager::get_current_binding();
         let candidate_record_shortcut = ShortcutManager::get_current_record_binding();
         let shortcut_conflict = ShortcutManager::detect_conflict(&candidate_shortcut)
             .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
         let record_shortcut_conflict = ShortcutManager::detect_conflict(&candidate_record_shortcut)
             .map(|c| format!("⚠️ Conflito com: {} ({})", c.key, c.description));
+
+        let (update_tx, update_rx) = std::sync::mpsc::channel();
 
         Self {
             candidate_shortcut,
@@ -30,7 +39,23 @@ impl SettingsApp {
             recording_shortcut_target: None,
             status_message: None,
             theme_mode: AdwaitaThemeMode::Dark,
+            auto_check_updates: cfg.auto_check_updates,
+            update_check_status: None,
+            available_release: None,
+            is_checking_updates: false,
+            update_rx,
+            update_tx,
         }
+    }
+
+    fn check_updates_async(&mut self) {
+        self.is_checking_updates = true;
+        self.update_check_status = Some("Verificando atualizações no GitHub...".into());
+        let tx = self.update_tx.clone();
+        std::thread::spawn(move || {
+            let res = crate::updater::check_for_updates();
+            let _ = tx.send(res);
+        });
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
@@ -279,6 +304,81 @@ impl eframe::App for SettingsApp {
                 quick_btn("<Control><Alt>v");
             });
 
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            // 3. System Updates Section
+            ui.heading("🔄 Atualizações do BenderShot");
+            ui.add_space(4.0);
+
+            let current_ver = crate::config::AppConfig::get_effective_version();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Versão Atual:").strong());
+                ui.label(RichText::new(&current_ver).color(Color32::from_rgb(53, 132, 228)));
+
+                if ui.checkbox(&mut self.auto_check_updates, "Checar atualizações automaticamente").changed() {
+                    let mut cfg = crate::config::AppConfig::load();
+                    cfg.auto_check_updates = self.auto_check_updates;
+                    let _ = cfg.save();
+                }
+            });
+
+            // Check if async update response arrived
+            while let Ok(res) = self.update_rx.try_recv() {
+                self.is_checking_updates = false;
+                match res {
+                    Ok(Some(release)) => {
+                        self.update_check_status = Some(format!("Nova versão disponível: {}!", release.tag_name));
+                        self.available_release = Some(release);
+                    }
+                    Ok(None) => {
+                        self.update_check_status = Some("Você já está usando a versão mais recente.".into());
+                        self.available_release = None;
+                    }
+                    Err(e) => {
+                        self.update_check_status = Some(format!("Erro ao verificar: {}", e));
+                        self.available_release = None;
+                    }
+                }
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let check_btn = egui::Button::new(
+                    RichText::new(if self.is_checking_updates { "⏳ Verificando..." } else { "🔍 Verificar Atualizações" }).strong()
+                ).rounding(Rounding::same(6.0));
+
+                if ui.add_enabled(!self.is_checking_updates, check_btn).clicked() {
+                    self.check_updates_async();
+                }
+
+                if let Some(ref release) = self.available_release {
+                    let update_btn = egui::Button::new(
+                        RichText::new(format!("⬆️ Instalar {}", release.tag_name)).strong()
+                    )
+                    .fill(Color32::from_rgb(46, 194, 126))
+                    .rounding(Rounding::same(6.0));
+
+                    if ui.add(update_btn).clicked() {
+                        if let Ok(exe) = std::env::current_exe() {
+                            let _ = std::process::Command::new(exe).args(["update", "--gui"]).spawn();
+                        }
+                    }
+                }
+
+                if let Some(ref status) = self.update_check_status {
+                    let color = if self.available_release.is_some() {
+                        Color32::from_rgb(46, 194, 126)
+                    } else if status.starts_with("Erro") {
+                        Color32::from_rgb(224, 27, 36)
+                    } else {
+                        Color32::from_rgb(180, 180, 180)
+                    };
+                    ui.colored_label(color, status);
+                }
+            });
+
             ui.add_space(16.0);
             if let Some((ref msg, time)) = self.status_message {
                 if time.elapsed().as_secs() < 4 {
@@ -291,7 +391,7 @@ impl eframe::App for SettingsApp {
             ui.add_space(10.0);
 
             ui.horizontal(|ui| {
-                let save_btn = egui::Button::new(RichText::new("💾 Salvar Atalhos").strong())
+                let save_btn = egui::Button::new(RichText::new("💾 Salvar Configurações").strong())
                     .fill(Color32::from_rgb(46, 194, 126))
                     .rounding(Rounding::same(6.0));
                 if ui.add(save_btn).clicked() {
@@ -304,8 +404,12 @@ impl eframe::App for SettingsApp {
                         self.set_status(format!("Erro ao definir atalho de gravação: {}", e));
                         ok = false;
                     }
+                    let mut cfg = crate::config::AppConfig::load();
+                    cfg.auto_check_updates = self.auto_check_updates;
+                    let _ = cfg.save();
+
                     if ok {
-                        self.set_status("Atalhos salvos com sucesso!");
+                        self.set_status("Configurações salvas com sucesso!");
                     }
                 }
 
@@ -331,8 +435,8 @@ pub fn run_settings_window() -> Result<(), eframe::Error> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("BenderShot - Configurações")
         .with_app_id("bendershot")
-        .with_inner_size([540.0, 480.0])
-        .with_min_inner_size([480.0, 420.0]);
+        .with_inner_size([560.0, 560.0])
+        .with_min_inner_size([480.0, 480.0]);
     if let Some(icon) = crate::ui::load_app_icon() {
         viewport = viewport.with_icon(icon);
     }

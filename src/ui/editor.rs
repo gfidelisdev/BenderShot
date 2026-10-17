@@ -104,6 +104,8 @@ pub struct EditorApp {
     pub zoom_scale: f32,
     pub pan_offset: Vec2,
     pub auto_fit: bool,
+    available_update_tag: Option<String>,
+    update_check_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
 }
 
 impl EditorApp {
@@ -155,6 +157,32 @@ impl EditorApp {
             zoom_scale: 1.0,
             pan_offset: Vec2::ZERO,
             auto_fit: true,
+            available_update_tag: {
+                let cfg = crate::config::AppConfig::load();
+                cfg.latest_known_tag
+            },
+            update_check_rx: {
+                let cfg = crate::config::AppConfig::load();
+                if cfg.auto_check_updates {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    // Check if last check was more than 4 hours ago
+                    if now.saturating_sub(cfg.last_update_check_epoch) > 4 * 3600 {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            let tag = crate::updater::check_for_updates().ok().flatten().map(|r| r.tag_name);
+                            let _ = tx.send(tag);
+                        });
+                        Some(rx)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            },
         }
     }
 
@@ -1134,7 +1162,26 @@ impl eframe::App for EditorApp {
                         self.show_layers_panel = !self.show_layers_panel;
                     }
 
+                    // Check if background update check returned
+                    if let Some(ref rx) = self.update_check_rx {
+                        if let Ok(tag_opt) = rx.try_recv() {
+                            self.available_update_tag = tag_opt;
+                        }
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Dark / Light Theme Toggle
+                        let theme_icon = match self.theme_mode {
+                            AdwaitaThemeMode::Dark => "☀️",
+                            AdwaitaThemeMode::Light => "🌙",
+                        };
+                        if ui.button(theme_icon).on_hover_text("Alternar tema Claro/Escuro").clicked() {
+                            self.theme_mode = match self.theme_mode {
+                                AdwaitaThemeMode::Dark => AdwaitaThemeMode::Light,
+                                AdwaitaThemeMode::Light => AdwaitaThemeMode::Dark,
+                            };
+                        }
+
                         // Settings / Shortcuts dialog button
                         if ui.button("⚙ Configurações").on_hover_text("Configurar atalhos globais de captura").clicked() {
                             self.show_settings_modal = true;
@@ -1146,16 +1193,21 @@ impl eframe::App for EditorApp {
                                 .map(|c| format!("Conflito com: {} ({})", c.key, c.description));
                         }
 
-                        // Dark / Light Theme Toggle
-                        let theme_icon = match self.theme_mode {
-                            AdwaitaThemeMode::Dark => "☀️",
-                            AdwaitaThemeMode::Light => "🌙",
-                        };
-                        if ui.button(theme_icon).on_hover_text("Alternar tema Claro/Escuro").clicked() {
-                            self.theme_mode = match self.theme_mode {
-                                AdwaitaThemeMode::Dark => AdwaitaThemeMode::Light,
-                                AdwaitaThemeMode::Light => AdwaitaThemeMode::Dark,
-                            };
+                        // Update available pill button
+                        if let Some(ref tag) = self.available_update_tag {
+                            let update_pill = egui::Button::new(
+                                egui::RichText::new(format!("⬆️ Atualizar ({})", tag))
+                                    .color(Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(Color32::from_rgb(46, 194, 126))
+                            .rounding(Rounding::same(12.0));
+
+                            if ui.add(update_pill).on_hover_text("Nova versão do BenderShot disponível! Clique para atualizar.").clicked() {
+                                if let Ok(exe) = std::env::current_exe() {
+                                    let _ = std::process::Command::new(exe).args(["update", "--gui"]).spawn();
+                                }
+                            }
                         }
                     });
                 });
@@ -2695,6 +2747,11 @@ impl eframe::App for EditorApp {
                             if ok {
                                 self.set_status("Atalhos atualizados com sucesso!");
                                 close_modal = true;
+                            }
+                        }
+                        if ui.button("🔄 Atualizações").clicked() {
+                            if let Ok(exe) = std::env::current_exe() {
+                                let _ = std::process::Command::new(exe).args(["update", "--gui"]).spawn();
                             }
                         }
                         if ui.button("Fechar").clicked() {

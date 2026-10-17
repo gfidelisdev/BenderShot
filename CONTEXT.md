@@ -172,3 +172,7 @@ _Avoid_: Polling loop, retry spin
 The root automation entry point (`./build_local.sh`) that compiles release/debug binaries, runs test validation, and packages native `.rpm`, `.deb`, `.AppImage`, and `.tar.gz` bundles into `packaging/dist`.
 _Avoid_: Compile helper, manual package script
 
+**In-Place Self-Updating**:
+The automatic or manual upgrade workflow that queries GitHub Releases (`gfidelisdev/BenderShot`), matches the host distribution packaging (AppImage, RPM, DEB, tarball binary, Windows setup), downloads and validates release assets, applies updates (elevating via `pkexec` when system root permissions are required), and gracefully restarts resident background daemons.
+_Avoid_: External updater, third-party installer script
+

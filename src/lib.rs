@@ -9,6 +9,7 @@ pub mod rasterize;
 pub mod shortcuts;
 pub mod ui;
 pub mod smooth;
+pub mod updater;
 pub mod video;
 
 #[cfg(test)]

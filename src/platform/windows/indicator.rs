@@ -31,7 +31,8 @@ const ID_TRAY_FULL: usize = 1002;
 const ID_TRAY_WINDOW: usize = 1003;
 const ID_TRAY_RECORD: usize = 1004;
 const ID_TRAY_SETTINGS: usize = 1005;
-const ID_TRAY_EXIT: usize = 1006;
+const ID_TRAY_UPDATE: usize = 1006;
+const ID_TRAY_EXIT: usize = 1007;
 
 const HOTKEY_CAPTURE_ID: i32 = 1;
 const HOTKEY_CAPTURE_FALLBACK_ID: i32 = 2;
@@ -80,6 +81,15 @@ fn spawn_settings() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = Command::new(exe)
             .arg("settings")
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+}
+
+fn spawn_update() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe)
+            .args(["update", "--gui"])
             .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }
@@ -175,6 +185,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_RECORD, to_wide("🎬 Gravar Tela (Vídeo)").as_ptr());
                         AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_SETTINGS, to_wide("⚙️ Configurações").as_ptr());
+                        AppendMenuW(hmenu, MF_STRING, ID_TRAY_UPDATE, to_wide("🔄 Verificar Atualizações").as_ptr());
                         AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_EXIT, to_wide("❌ Sair").as_ptr());
 
@@ -199,6 +210,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     ID_TRAY_WINDOW => spawn_capture(CaptureMode::Window),
                     ID_TRAY_RECORD => spawn_record(),
                     ID_TRAY_SETTINGS => spawn_settings(),
+                    ID_TRAY_UPDATE => spawn_update(),
                     ID_TRAY_EXIT => {
                         PostQuitMessage(0);
                     }

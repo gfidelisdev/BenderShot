@@ -16,6 +16,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_VER="${GITHUB_REF#refs/tags/v}"
+            echo "Syncing version to ${TAG_VER}"
+            sed -i "s/^version = \".*\"/version = \"${TAG_VER}\"/" Cargo.toml
+            sed -i "s/#define MyAppVersion \".*\"/#define MyAppVersion \"${TAG_VER}\"/" packaging/windows/bendershot.iss
+          fi
+
       - name: Build Release Binary
         run: cargo build --release
 
@@ -40,6 +50,15 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Sync version from tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_VER="${GITHUB_REF#refs/tags/v}"
+            echo "Syncing version to ${TAG_VER}"
+            sed -i "s/^version = \".*\"/version = \"${TAG_VER}\"/" Cargo.toml
+            sed -i "s/^Version: .*/Version:        ${TAG_VER}/" packaging/rpm/bendershot.spec
+          fi
 
       - name: Install System Dependencies
         run: |
