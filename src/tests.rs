@@ -837,3 +837,41 @@ fn test_crop_selection_from_desktop_multi_monitor() {
     assert_eq!(cropped_full.dimensions(), (400, 250));
     assert_eq!(*cropped_full.get_pixel(0, 0), Rgba([10, 255, 30, 255]));
 }
+
+#[test]
+fn test_toolbar_config_serde_and_positions() {
+    use crate::config::{AppConfig, ToolbarPosition};
+
+    // Default configuration verification
+    let default_cfg = AppConfig::default();
+    assert_eq!(default_cfg.toolbar_position, ToolbarPosition::Left);
+    assert!(!default_cfg.toolbar_expanded);
+
+    // Backward compatibility: old JSON without toolbar fields
+    let old_json = r#"{
+        "setup_completed": true,
+        "autostart_enabled": true,
+        "capture_shortcut": "Print",
+        "record_shortcut": "<Ctrl><Shift>R"
+    }"#;
+    let loaded: AppConfig = serde_json::from_str(old_json).expect("should deserialize old config");
+    assert_eq!(loaded.toolbar_position, ToolbarPosition::Left);
+    assert!(!loaded.toolbar_expanded);
+
+    // Serialization and deserialization of all 4 positions
+    for pos in [
+        ToolbarPosition::Left,
+        ToolbarPosition::Top,
+        ToolbarPosition::Right,
+        ToolbarPosition::Bottom,
+    ] {
+        let mut cfg = AppConfig::default();
+        cfg.toolbar_position = pos;
+        cfg.toolbar_expanded = true;
+        let s = serde_json::to_string(&cfg).expect("serialize config");
+        let restored: AppConfig = serde_json::from_str(&s).expect("deserialize config");
+        assert_eq!(restored.toolbar_position, pos);
+        assert!(restored.toolbar_expanded);
+    }
+}
+

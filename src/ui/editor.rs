@@ -1,3 +1,4 @@
+use crate::config::ToolbarPosition;
 use crate::export::Exporter;
 use crate::model::{AnnotationItem, FontFamily, ObfuscateKind, Scene, TextBackground, ToolMode};
 use crate::rasterize::{apply_obfuscation, apply_smudge_step, rasterize_scene};
@@ -110,6 +111,9 @@ pub struct EditorApp {
     pub zoom_scale: f32,
     pub pan_offset: Vec2,
     pub auto_fit: bool,
+    pub toolbar_position: crate::config::ToolbarPosition,
+    pub toolbar_expanded: bool,
+    pub last_viewport_rect: Rect,
     available_update_tag: Option<String>,
     update_check_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
 }
@@ -159,7 +163,7 @@ impl EditorApp {
             crop_selection: None,
             active_inline_text: None,
             show_loupe: true,
-            show_layers_panel: true,
+            show_layers_panel: false,
             show_settings_modal: false,
             recording_shortcut_target: None,
             candidate_shortcut: crate::shortcuts::ShortcutManager::get_current_binding(),
@@ -195,6 +199,15 @@ impl EditorApp {
             zoom_scale: 1.0,
             pan_offset: Vec2::ZERO,
             auto_fit: true,
+            toolbar_position: {
+                let cfg = crate::config::AppConfig::load();
+                cfg.toolbar_position
+            },
+            toolbar_expanded: {
+                let cfg = crate::config::AppConfig::load();
+                cfg.toolbar_expanded
+            },
+            last_viewport_rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
             available_update_tag: {
                 let cfg = crate::config::AppConfig::load();
                 cfg.latest_known_tag
@@ -652,6 +665,313 @@ impl EditorApp {
         }
     }
 
+    pub fn set_toolbar_position(&mut self, pos: crate::config::ToolbarPosition) {
+        self.toolbar_position = pos;
+        let mut cfg = crate::config::AppConfig::load();
+        cfg.toolbar_position = pos;
+        let _ = cfg.save();
+    }
+
+    pub fn toggle_toolbar_expanded(&mut self) {
+        self.toolbar_expanded = !self.toolbar_expanded;
+        let mut cfg = crate::config::AppConfig::load();
+        cfg.toolbar_expanded = self.toolbar_expanded;
+        let _ = cfg.save();
+    }
+
+    fn render_tools_content(&mut self, ui: &mut egui::Ui, is_vertical: bool) {
+        let tools: &[(ToolMode, &str, &str, &str)] = &[
+            (ToolMode::Select, "↖", "Seleção (V)", "Selecionar e transformar objetos (V)"),
+            (ToolMode::Pan, "✋", "Mão / Pan (H)", "Mover visão do canvas (H ou Segure Espaço)"),
+            (ToolMode::Freehand, "✏", "Caneta", "Desenhar livremente"),
+            (ToolMode::FreehandHighlighter, "🖊", "Grifador Livre", "Marca-texto livre translúcido"),
+            (ToolMode::Bezier, "➰", "Curva Bézier", "Linha ou seta curva com ponto de controle"),
+            (ToolMode::Arrow, "↗", "Seta", "Desenhar seta reta indicadora"),
+            (ToolMode::Polygon, "⬡", "Polígono", "Polígono regular de N lados ou vértices livres"),
+            (ToolMode::Ellipse, "◯", "Elipse", "Desenhar elipse ou círculo (segure Ctrl)"),
+            (ToolMode::Highlight, "▭", "Grifo Box", "Destacar área com grifo retangular"),
+            (ToolMode::Text, "T", "Texto", "Inserir texto personalizável"),
+            (ToolMode::StepBadge, "①", "Passo", "Estampar números de passos ordenados"),
+            (ToolMode::Blur, "░", "Desfoque", "Ofuscar área sensível com desfoque"),
+            (ToolMode::Pixelate, "▦", "Pixelizar", "Ofuscar área sensível com mosaico de pixels"),
+            (ToolMode::Smudge, "≋", "Smudge", "Esfregar e distorcer cores da imagem"),
+            (ToolMode::ColorErase, "🧹", "Apagar Cor", "Apagar cor de fundo semelhante por tolerância"),
+            (ToolMode::Crop, "⯏", "Trecho / Corte", "Selecionar trecho para recorte ou cópia"),
+        ];
+
+        let next_badge = self.scene.next_badge_number;
+
+        let render_buttons = |ui: &mut egui::Ui, self_app: &mut Self| {
+            for &(mode, icon, label, tooltip) in tools {
+                let is_selected = self_app.current_tool == mode;
+                let btn_text = if is_vertical && self_app.toolbar_expanded {
+                    if mode == ToolMode::StepBadge {
+                        format!("{} Passo ({})", icon, next_badge)
+                    } else {
+                        format!("{} {}", icon, label)
+                    }
+                } else if !is_vertical && self_app.toolbar_expanded {
+                    if mode == ToolMode::StepBadge {
+                        format!("{} Passo ({})", icon, next_badge)
+                    } else {
+                        format!("{} {}", icon, label)
+                    }
+                } else if mode == ToolMode::StepBadge {
+                    format!("①{}", next_badge)
+                } else {
+                    icon.to_string()
+                };
+
+                let btn = if is_vertical && !self_app.toolbar_expanded {
+                    egui::Button::new(egui::RichText::new(&btn_text).size(14.0))
+                        .min_size(Vec2::new(34.0, 32.0))
+                        .rounding(Rounding::same(6.0))
+                } else if is_vertical {
+                    egui::Button::new(egui::RichText::new(&btn_text).size(13.0))
+                        .min_size(Vec2::new(140.0, 30.0))
+                        .rounding(Rounding::same(6.0))
+                } else if !self_app.toolbar_expanded {
+                    egui::Button::new(egui::RichText::new(&btn_text).size(13.5))
+                        .min_size(Vec2::new(32.0, 28.0))
+                        .rounding(Rounding::same(6.0))
+                } else {
+                    egui::Button::new(egui::RichText::new(&btn_text).size(12.5))
+                        .rounding(Rounding::same(6.0))
+                };
+
+                let resp = if is_selected {
+                    let active_bg = match self_app.theme_mode {
+                        AdwaitaThemeMode::Dark => Color32::from_rgb(53, 132, 228),
+                        AdwaitaThemeMode::Light => Color32::from_rgb(53, 132, 228),
+                    };
+                    ui.add(btn.fill(active_bg))
+                } else {
+                    ui.add(btn)
+                };
+
+                if resp.on_hover_text(tooltip).clicked() {
+                    self_app.commit_inline_text();
+                    self_app.current_tool = mode;
+                }
+            }
+        };
+
+        if is_vertical {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(0.0, 4.0);
+                render_buttons(ui, self);
+            });
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                render_buttons(ui, self);
+            });
+        }
+    }
+
+    fn render_properties_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+
+            // 1. Color Palette Pills
+            let palette: [[u8; 4]; 7] = [
+                [224, 27, 36, 255],   // Adwaita Red
+                [255, 120, 0, 255],   // Adwaita Orange
+                [246, 211, 45, 255],  // Adwaita Yellow
+                [46, 194, 126, 255],  // Adwaita Green
+                [53, 132, 228, 255],  // Adwaita Blue
+                [255, 255, 255, 255], // White
+                [20, 20, 20, 255],    // Black
+            ];
+
+            ui.group(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                for color in palette {
+                    let c32 = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::click());
+                    ui.painter().rect_filled(rect, Rounding::same(8.0), c32);
+                    if self.current_color == color {
+                        ui.painter().rect_stroke(rect, Rounding::same(8.0), Stroke::new(2.0_f32, Color32::WHITE));
+                    }
+                    if resp.clicked() {
+                        self.current_color = color;
+                        if let Some(idx) = self.selected_item_index {
+                            if let Some(item) = self.scene.items.get_mut(idx) {
+                                item.set_color(color);
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 2. Stroke Width Slider
+            ui.group(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                ui.label("Traço:");
+                let prev_width = self.stroke_width;
+                ui.add(egui::Slider::new(&mut self.stroke_width, 1.0..=20.0).show_value(false));
+                ui.label(format!("{:.0}px", self.stroke_width));
+                if (prev_width - self.stroke_width).abs() > 0.05 {
+                    if let Some(idx) = self.selected_item_index {
+                        if let Some(item) = self.scene.items.get_mut(idx) {
+                            item.set_width(self.stroke_width);
+                        }
+                    }
+                }
+            });
+
+            // 3. Contextual Tool Settings
+            match self.current_tool {
+                ToolMode::Freehand | ToolMode::FreehandHighlighter => {
+                    ui.separator();
+                    ui.group(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        let smooth_txt = if self.freehand_smoothing { "✨ Suavizado" } else { "✏ Bruto (Raw)" };
+                        if ui.button(smooth_txt).on_hover_text("Alternar entre traço bruto e curvas suavizadas").clicked() {
+                            self.freehand_smoothing = !self.freehand_smoothing;
+                        }
+                        if self.freehand_smoothing {
+                            ui.label("Intensidade:");
+                            ui.add(egui::Slider::new(&mut self.freehand_smooth_intensity, 1..=5));
+                        }
+                    });
+                }
+                ToolMode::Polygon => {
+                    ui.separator();
+                    ui.group(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        let mode_txt = if self.polygon_is_freeform { "✏ Vértices Livres" } else { "⬡ Regular" };
+                        if ui.button(mode_txt).on_hover_text("Alternar entre regular (N lados) e livre (clique ponto-a-ponto)").clicked() {
+                            self.polygon_is_freeform = !self.polygon_is_freeform;
+                            self.polygon_freeform_points.clear();
+                        }
+                        if !self.polygon_is_freeform {
+                            ui.label("Lados:");
+                            for s in [3, 4, 5, 6, 8] {
+                                let lbl = match s {
+                                    3 => "3 (▲)",
+                                    4 => "4 (▢)",
+                                    5 => "5 (⬠)",
+                                    6 => "6 (⬡)",
+                                    8 => "8 (🛑)",
+                                    _ => "",
+                                };
+                                if ui.selectable_label(self.polygon_sides == s, lbl).clicked() {
+                                    self.polygon_sides = s;
+                                }
+                            }
+                            ui.add(egui::DragValue::new(&mut self.polygon_sides).range(3..=16));
+                        } else if !self.polygon_freeform_points.is_empty() {
+                            ui.label(format!("Vértices: {}", self.polygon_freeform_points.len()));
+                            if ui.button("✔ Fechar").clicked() {
+                                self.commit_freeform_polygon();
+                            }
+                            if ui.small_button("✕").clicked() {
+                                self.polygon_freeform_points.clear();
+                            }
+                        }
+                    });
+                }
+                ToolMode::Bezier => {
+                    ui.separator();
+                    ui.group(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        let kind_txt = if self.bezier_is_arrow { "↗ Seta Curva" } else { "➰ Linha Curva" };
+                        if ui.button(kind_txt).on_hover_text("Alternar entre curva simples e seta curva").clicked() {
+                            self.bezier_is_arrow = !self.bezier_is_arrow;
+                        }
+                    });
+                }
+                ToolMode::ColorErase => {
+                    ui.separator();
+                    ui.group(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        ui.label("Tolerância:");
+                        ui.add(egui::Slider::new(&mut self.color_erase_tolerance, 1.0..=60.0).suffix("%"));
+                        ui.label("Clique no pixel que deseja apagar");
+                    });
+                }
+                _ => {}
+            }
+
+            // Text options when Text tool or a Text item is active
+            let is_text_focused = self.current_tool == ToolMode::Text
+                || self.selected_item_index.and_then(|idx| self.scene.items.get(idx)).map_or(false, |it| matches!(it, AnnotationItem::Text { .. }));
+
+            if is_text_focused {
+                ui.separator();
+                ui.group(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                    ui.label("Fonte:");
+                    if ui.selectable_label(self.selected_font_family == FontFamily::Sans, "Sans").clicked() {
+                        self.selected_font_family = FontFamily::Sans;
+                        if let Some(idx) = self.selected_item_index {
+                            if let Some(AnnotationItem::Text { family, .. }) = self.scene.items.get_mut(idx) {
+                                *family = FontFamily::Sans;
+                            }
+                        }
+                    }
+                    if ui.selectable_label(self.selected_font_family == FontFamily::Monospace, "Mono").clicked() {
+                        self.selected_font_family = FontFamily::Monospace;
+                        if let Some(idx) = self.selected_item_index {
+                            if let Some(AnnotationItem::Text { family, .. }) = self.scene.items.get_mut(idx) {
+                                *family = FontFamily::Monospace;
+                            }
+                        }
+                    }
+                    if ui.selectable_label(self.selected_font_family == FontFamily::Serif, "Serif").clicked() {
+                        self.selected_font_family = FontFamily::Serif;
+                        if let Some(idx) = self.selected_item_index {
+                            if let Some(AnnotationItem::Text { family, .. }) = self.scene.items.get_mut(idx) {
+                                *family = FontFamily::Serif;
+                            }
+                        }
+                    }
+
+                    ui.separator();
+                    ui.label("Fundo:");
+                    if ui.selectable_label(self.selected_text_bg == TextBackground::Halo, "Halo").clicked() {
+                        self.selected_text_bg = TextBackground::Halo;
+                        if let Some(idx) = self.selected_item_index {
+                            if let Some(AnnotationItem::Text { bg_style, .. }) = self.scene.items.get_mut(idx) {
+                                *bg_style = TextBackground::Halo;
+                            }
+                        }
+                    }
+                    if ui.selectable_label(self.selected_text_bg == TextBackground::FilledTag, "Tag").clicked() {
+                        self.selected_text_bg = TextBackground::FilledTag;
+                        if let Some(idx) = self.selected_item_index {
+                            if let Some(AnnotationItem::Text { bg_style, .. }) = self.scene.items.get_mut(idx) {
+                                *bg_style = TextBackground::FilledTag;
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Contextual Crop Options
+            if let Some(crop_rect) = self.crop_selection {
+                ui.separator();
+                ui.group(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                    let cw = (crop_rect.width()) as u32;
+                    let ch = (crop_rect.height()) as u32;
+                    ui.label(format!("Trecho: {}x{}px", cw, ch));
+
+                    if ui.button("✂ Cortar Imagem").on_hover_text("Recortar a imagem inteira para o trecho selecionado").clicked() {
+                        self.apply_crop();
+                    }
+                    if ui.button("📋 Copiar Trecho").on_hover_text("Copiar apenas este trecho para a área de transferência").clicked() {
+                        self.copy_crop_selection();
+                    }
+                    if ui.small_button("✕").on_hover_text("Cancelar seleção de trecho").clicked() {
+                        self.crop_selection = None;
+                    }
+                });
+            }
+        });
+    }
+
     fn export_current_raster(&self) -> RgbaImage {
         rasterize_scene(&self.base_image, &self.scene)
     }
@@ -902,236 +1222,9 @@ impl eframe::App for EditorApp {
         egui::TopBottomPanel::top("adwaita_headerbar")
             .frame(Frame::none().fill(header_bg).inner_margin(Margin::symmetric(14.0, 8.0)))
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     // App Title
                     ui.label(egui::RichText::new("📷 BenderShot").strong().size(15.0));
-                    ui.separator();
-
-                    let next_badge = self.scene.next_badge_number;
-                    // Pill Segmented Tool Group
-                    ui.group(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                        let mut tool_btn = |mode: ToolMode, label: &str| {
-                            let selected = self.current_tool == mode;
-                            if ui.selectable_label(selected, label).clicked() {
-                                self.commit_inline_text();
-                                self.current_tool = mode;
-                            }
-                        };
-
-                        tool_btn(ToolMode::Select, "↖ Sel");
-                        tool_btn(ToolMode::Pan, "✋ Pan");
-                        tool_btn(ToolMode::Freehand, "✏ Caneta");
-                        tool_btn(ToolMode::FreehandHighlighter, "🖊 Grifador");
-                        tool_btn(ToolMode::Bezier, "➰ Bézier");
-                        tool_btn(ToolMode::Arrow, "↗ Seta");
-                        tool_btn(ToolMode::Polygon, "⬡ Polígono");
-                        tool_btn(ToolMode::Ellipse, "◯ Elipse");
-                        tool_btn(ToolMode::Highlight, "▭ Grifo Box");
-                        tool_btn(ToolMode::Text, "T Texto");
-                        tool_btn(ToolMode::StepBadge, &format!("① Passo ({})", next_badge));
-                        tool_btn(ToolMode::Blur, "░ Blur");
-                        tool_btn(ToolMode::Pixelate, "▦ Pixel");
-                        tool_btn(ToolMode::Smudge, "≋ Smudge");
-                        tool_btn(ToolMode::ColorErase, "🧹 Apagar Cor");
-                        tool_btn(ToolMode::Crop, "⯏ Trecho");
-                    });
-
-                    // Contextual buttons for Freehand and Highlighter smoothing
-                    if self.current_tool == ToolMode::Freehand || self.current_tool == ToolMode::FreehandHighlighter {
-                        ui.separator();
-                        ui.group(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                            let smooth_txt = if self.freehand_smoothing { "✨ Suavizado" } else { "✏ Bruto (Raw)" };
-                            if ui.button(smooth_txt).on_hover_text("Alternar entre traço bruto e curvas suavizadas").clicked() {
-                                self.freehand_smoothing = !self.freehand_smoothing;
-                            }
-                            if self.freehand_smoothing {
-                                ui.label("Intensidade:");
-                                ui.add(egui::Slider::new(&mut self.freehand_smooth_intensity, 1..=5));
-                            }
-                        });
-                    }
-
-                    // Contextual buttons for Polygon
-                    if self.current_tool == ToolMode::Polygon {
-                        ui.separator();
-                        ui.group(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                            let mode_txt = if self.polygon_is_freeform { "✏ Vértices Livres" } else { "⬡ Regular" };
-                            if ui.button(mode_txt).on_hover_text("Alternar entre polígono regular (N lados) e livre (clique ponto-a-ponto)").clicked() {
-                                self.polygon_is_freeform = !self.polygon_is_freeform;
-                                self.polygon_freeform_points.clear();
-                            }
-                            if !self.polygon_is_freeform {
-                                ui.label("Lados:");
-                                for s in [3, 4, 5, 6, 8] {
-                                    let lbl = match s {
-                                        3 => "3 (▲)",
-                                        4 => "4 (▢)",
-                                        5 => "5 (⬠)",
-                                        6 => "6 (⬡)",
-                                        8 => "8 (🛑)",
-                                        _ => "",
-                                    };
-                                    if ui.selectable_label(self.polygon_sides == s, lbl).clicked() {
-                                        self.polygon_sides = s;
-                                    }
-                                }
-                                ui.add(egui::DragValue::new(&mut self.polygon_sides).range(3..=16));
-                            } else if !self.polygon_freeform_points.is_empty() {
-                                ui.label(format!("Vértices: {}", self.polygon_freeform_points.len()));
-                                if ui.button("✔ Fechar").clicked() {
-                                    self.commit_freeform_polygon();
-                                }
-                                if ui.small_button("✕").clicked() {
-                                    self.polygon_freeform_points.clear();
-                                }
-                            }
-                        });
-                    }
-
-                    // Contextual buttons for Bezier
-                    if self.current_tool == ToolMode::Bezier {
-                        ui.separator();
-                        ui.group(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                            let kind_txt = if self.bezier_is_arrow { "↗ Seta Curva" } else { "➰ Linha Curva" };
-                            if ui.button(kind_txt).on_hover_text("Alternar entre curva simples e seta curva").clicked() {
-                                self.bezier_is_arrow = !self.bezier_is_arrow;
-                            }
-                        });
-                    }
-
-                    // Contextual buttons when ColorErase tool is selected
-                    if self.current_tool == ToolMode::ColorErase {
-                        ui.separator();
-                        ui.group(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                            ui.label("Tolerância:");
-                            ui.add(egui::Slider::new(&mut self.color_erase_tolerance, 1.0..=60.0).suffix("%"));
-                            ui.label("Clique no pixel que deseja apagar");
-                        });
-                    }
-
-                    // Contextual buttons when a Crop/Trecho region is selected
-                    if let Some(crop_rect) = self.crop_selection {
-                        ui.separator();
-                        ui.group(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                            let cw = (crop_rect.width()) as u32;
-                            let ch = (crop_rect.height()) as u32;
-                            ui.label(format!("Trecho: {}x{}px", cw, ch));
-
-                            if ui.button("✂ Cortar Imagem").on_hover_text("Recortar a imagem inteira para o trecho selecionado").clicked() {
-                                self.apply_crop();
-                            }
-                            if ui.button("📋 Copiar Trecho").on_hover_text("Copiar apenas este trecho para a área de transferência sem alterar a imagem original").clicked() {
-                                self.copy_crop_selection();
-                            }
-                            if ui.small_button("✕").on_hover_text("Cancelar seleção de trecho").clicked() {
-                                self.crop_selection = None;
-                            }
-                        });
-                    }
-
-                    ui.separator();
-
-                    // Text-specific controls if Text tool is active or a text item is selected
-                    let is_text_focused = self.current_tool == ToolMode::Text
-                        || self.selected_item_index.and_then(|idx| self.scene.items.get(idx)).map_or(false, |it| matches!(it, AnnotationItem::Text { .. }));
-
-                    if is_text_focused {
-                        ui.group(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                            ui.label("Fonte:");
-                            if ui.selectable_label(self.selected_font_family == FontFamily::Sans, "Sans").clicked() {
-                                self.selected_font_family = FontFamily::Sans;
-                                if let Some(idx) = self.selected_item_index {
-                                    if let Some(AnnotationItem::Text { family, .. }) = self.scene.items.get_mut(idx) {
-                                        *family = FontFamily::Sans;
-                                    }
-                                }
-                            }
-                            if ui.selectable_label(self.selected_font_family == FontFamily::Monospace, "Mono").clicked() {
-                                self.selected_font_family = FontFamily::Monospace;
-                                if let Some(idx) = self.selected_item_index {
-                                    if let Some(AnnotationItem::Text { family, .. }) = self.scene.items.get_mut(idx) {
-                                        *family = FontFamily::Monospace;
-                                    }
-                                }
-                            }
-                            if ui.selectable_label(self.selected_font_family == FontFamily::Serif, "Serif").clicked() {
-                                self.selected_font_family = FontFamily::Serif;
-                                if let Some(idx) = self.selected_item_index {
-                                    if let Some(AnnotationItem::Text { family, .. }) = self.scene.items.get_mut(idx) {
-                                        *family = FontFamily::Serif;
-                                    }
-                                }
-                            }
-
-                            ui.separator();
-                            ui.label("Fundo:");
-                            if ui.selectable_label(self.selected_text_bg == TextBackground::Halo, "Halo").clicked() {
-                                self.selected_text_bg = TextBackground::Halo;
-                                if let Some(idx) = self.selected_item_index {
-                                    if let Some(AnnotationItem::Text { bg_style, .. }) = self.scene.items.get_mut(idx) {
-                                        *bg_style = TextBackground::Halo;
-                                    }
-                                }
-                            }
-                            if ui.selectable_label(self.selected_text_bg == TextBackground::FilledTag, "Tag").clicked() {
-                                self.selected_text_bg = TextBackground::FilledTag;
-                                if let Some(idx) = self.selected_item_index {
-                                    if let Some(AnnotationItem::Text { bg_style, .. }) = self.scene.items.get_mut(idx) {
-                                        *bg_style = TextBackground::FilledTag;
-                                    }
-                                }
-                            }
-                        });
-                        ui.separator();
-                    }
-
-                    // Stroke width
-                    ui.label("Traço:");
-                    let prev_width = self.stroke_width;
-                    ui.add(egui::Slider::new(&mut self.stroke_width, 1.0..=20.0).show_value(false));
-                    if (prev_width - self.stroke_width).abs() > 0.05 {
-                        if let Some(idx) = self.selected_item_index {
-                            if let Some(item) = self.scene.items.get_mut(idx) {
-                                item.set_width(self.stroke_width);
-                            }
-                        }
-                    }
-
-                    // Color palette pills
-                    let palette: [[u8; 4]; 7] = [
-                        [224, 27, 36, 255],   // Adwaita Red
-                        [255, 120, 0, 255],   // Adwaita Orange
-                        [246, 211, 45, 255],  // Adwaita Yellow
-                        [46, 194, 126, 255],  // Adwaita Green
-                        [53, 132, 228, 255],  // Adwaita Blue
-                        [255, 255, 255, 255], // White
-                        [20, 20, 20, 255],    // Black
-                    ];
-
-                    for color in palette {
-                        let c32 = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::click());
-                        ui.painter().rect_filled(rect, Rounding::same(9.0), c32);
-                        if self.current_color == color {
-                            ui.painter().rect_stroke(rect, Rounding::same(9.0), Stroke::new(2.0_f32, Color32::WHITE));
-                        }
-                        if resp.clicked() {
-                            self.current_color = color;
-                            if let Some(idx) = self.selected_item_index {
-                                if let Some(item) = self.scene.items.get_mut(idx) {
-                                    item.set_color(color);
-                                }
-                            }
-                        }
-                    }
-
                     ui.separator();
 
                     // Undo / Redo
@@ -1206,14 +1299,6 @@ impl eframe::App for EditorApp {
                         self.set_status("Screenshot fixado na tela");
                     }
 
-                    ui.separator();
-
-                    // Toggle Layers Panel button
-                    let layers_btn_text = if self.show_layers_panel { "☰ Camadas" } else { "☷ Camadas" };
-                    if ui.selectable_label(self.show_layers_panel, layers_btn_text).clicked() {
-                        self.show_layers_panel = !self.show_layers_panel;
-                    }
-
                     // Check if background update check returned
                     if let Some(ref rx) = self.update_check_rx {
                         if let Ok(tag_opt) = rx.try_recv() {
@@ -1235,7 +1320,7 @@ impl eframe::App for EditorApp {
                         }
 
                         // Settings / Shortcuts dialog button
-                        if ui.button("⚙ Configurações").on_hover_text("Configurar atalhos globais de captura").clicked() {
+                        if ui.button("⚙").on_hover_text("Configurar atalhos globais de captura").clicked() {
                             self.show_settings_modal = true;
                             self.candidate_shortcut = crate::shortcuts::ShortcutManager::get_current_binding();
                             self.candidate_window_shortcut = crate::shortcuts::ShortcutManager::get_current_window_binding();
@@ -1267,9 +1352,134 @@ impl eframe::App for EditorApp {
                                 }
                             }
                         }
+
+                        // Toggle Layers Panel button
+                        let layers_btn_text = if self.show_layers_panel { "☰ Camadas" } else { "☷ Camadas" };
+                        if ui.selectable_label(self.show_layers_panel, layers_btn_text).clicked() {
+                            self.show_layers_panel = !self.show_layers_panel;
+                        }
+
+                        // Toolbar Position Menu
+                        let pos_label = match self.toolbar_position {
+                            ToolbarPosition::Left => "◧ Barra: Esquerda",
+                            ToolbarPosition::Top => "◰ Barra: Topo",
+                            ToolbarPosition::Right => "◨ Barra: Direita",
+                            ToolbarPosition::Bottom => "◳ Barra: Base",
+                        };
+                        ui.menu_button(pos_label, |ui| {
+                            if ui.selectable_label(self.toolbar_position == ToolbarPosition::Left, "◧ Barra à Esquerda").clicked() {
+                                self.set_toolbar_position(ToolbarPosition::Left);
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(self.toolbar_position == ToolbarPosition::Top, "◰ Barra no Topo").clicked() {
+                                self.set_toolbar_position(ToolbarPosition::Top);
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(self.toolbar_position == ToolbarPosition::Right, "◨ Barra à Direita").clicked() {
+                                self.set_toolbar_position(ToolbarPosition::Right);
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(self.toolbar_position == ToolbarPosition::Bottom, "◳ Barra na Base").clicked() {
+                                self.set_toolbar_position(ToolbarPosition::Bottom);
+                                ui.close_menu();
+                            }
+                        });
                     });
                 });
             });
+
+        // Dedicated Properties Sub-bar below Headerbar
+        let prop_bg = match self.theme_mode {
+            AdwaitaThemeMode::Dark => Color32::from_rgb(38, 38, 38),
+            AdwaitaThemeMode::Light => Color32::from_rgb(246, 246, 246),
+        };
+        egui::TopBottomPanel::top("adwaita_properties_bar")
+            .frame(Frame::none().fill(prop_bg).inner_margin(Margin::symmetric(14.0, 5.0)))
+            .show(ctx, |ui| {
+                self.render_properties_bar(ui);
+            });
+
+        // Tools Dock if Top
+        if self.toolbar_position == ToolbarPosition::Top {
+            egui::TopBottomPanel::top("tools_dock_top")
+                .frame(Frame::none().fill(header_bg).inner_margin(Margin::symmetric(14.0, 6.0)))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let toggle_lbl = if self.toolbar_expanded { "◀ Compacto" } else { "▶ Expandido" };
+                        if ui.button(toggle_lbl).on_hover_text(if self.toolbar_expanded { "Recolher rótulos para modo compacto" } else { "Expandir para exibir rótulos das ferramentas" }).clicked() {
+                            self.toggle_toolbar_expanded();
+                        }
+                        ui.separator();
+                        self.render_tools_content(ui, false);
+                    });
+                });
+        }
+
+        // Tools Dock if Bottom
+        if self.toolbar_position == ToolbarPosition::Bottom {
+            egui::TopBottomPanel::bottom("tools_dock_bottom")
+                .frame(Frame::none().fill(header_bg).inner_margin(Margin::symmetric(14.0, 6.0)))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let toggle_lbl = if self.toolbar_expanded { "◀ Compacto" } else { "▶ Expandido" };
+                        if ui.button(toggle_lbl).on_hover_text(if self.toolbar_expanded { "Recolher rótulos para modo compacto" } else { "Expandir para exibir rótulos das ferramentas" }).clicked() {
+                            self.toggle_toolbar_expanded();
+                        }
+                        ui.separator();
+                        self.render_tools_content(ui, false);
+                    });
+                });
+        }
+
+        // Tools Dock if Left
+        if self.toolbar_position == ToolbarPosition::Left {
+            let panel_w = if self.toolbar_expanded { 156.0 } else { 44.0 };
+            egui::SidePanel::left("tools_dock_left")
+                .frame(Frame::none().fill(header_bg).inner_margin(Margin::symmetric(5.0, 8.0)))
+                .resizable(false)
+                .default_width(panel_w)
+                .width_range(panel_w..=panel_w)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let toggle_icon = if self.toolbar_expanded { "«" } else { "»" };
+                        if ui.button(egui::RichText::new(toggle_icon).strong()).on_hover_text(if self.toolbar_expanded { "Recolher para ícones compactos" } else { "Expandir para ver nomes das ferramentas" }).clicked() {
+                            self.toggle_toolbar_expanded();
+                        }
+                        if self.toolbar_expanded {
+                            ui.label(egui::RichText::new("Ferramentas").strong().size(12.0));
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.render_tools_content(ui, true);
+                    });
+                });
+        }
+
+        // Tools Dock if Right
+        if self.toolbar_position == ToolbarPosition::Right {
+            let panel_w = if self.toolbar_expanded { 156.0 } else { 44.0 };
+            egui::SidePanel::right("tools_dock_right")
+                .frame(Frame::none().fill(header_bg).inner_margin(Margin::symmetric(5.0, 8.0)))
+                .resizable(false)
+                .default_width(panel_w)
+                .width_range(panel_w..=panel_w)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let toggle_icon = if self.toolbar_expanded { "»" } else { "«" };
+                        if ui.button(egui::RichText::new(toggle_icon).strong()).on_hover_text(if self.toolbar_expanded { "Recolher para ícones compactos" } else { "Expandir para ver nomes das ferramentas" }).clicked() {
+                            self.toggle_toolbar_expanded();
+                        }
+                        if self.toolbar_expanded {
+                            ui.label(egui::RichText::new("Ferramentas").strong().size(12.0));
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.render_tools_content(ui, true);
+                    });
+                });
+        }
 
         // Right-hand Layers Panel (Photoshop / Figma style)
         if self.show_layers_panel {
@@ -1547,6 +1757,30 @@ impl eframe::App for EditorApp {
                             ui.colored_label(Color32::from_rgb(46, 194, 126), msg);
                         }
                     }
+
+                    // Zoom Controls on the Right side of the footer
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                        if ui.button("⛶ Ajustar").on_hover_text("Ajustar à Janela (Ctrl + 0)").clicked() {
+                            self.fit_to_viewport(self.last_viewport_rect.size());
+                            self.set_status("Ajustado à janela");
+                        }
+                        if ui.button("➕").on_hover_text("Aumentar Zoom (Ctrl + +)").clicked() {
+                            self.zoom_by(1.15, self.last_viewport_rect.center(), self.last_viewport_rect.min);
+                            self.clamp_pan(self.last_viewport_rect.size());
+                            self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
+                        }
+                        let zoom_pct = (self.zoom_scale * 100.0).round() as i32;
+                        if ui.button(format!("{}%", zoom_pct)).on_hover_text("Tamanho Real 100% (Ctrl + 1)").clicked() {
+                            self.set_zoom_100(self.last_viewport_rect);
+                            self.set_status("Zoom: 100% (1:1)");
+                        }
+                        if ui.button("➖").on_hover_text("Reduzir Zoom (Ctrl + -)").clicked() {
+                            self.zoom_by(1.0 / 1.15, self.last_viewport_rect.center(), self.last_viewport_rect.min);
+                            self.clamp_pan(self.last_viewport_rect.size());
+                            self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
+                        }
+                    });
                 });
             });
 
@@ -1561,6 +1795,7 @@ impl eframe::App for EditorApp {
             }
 
             let (viewport_rect, response) = ui.allocate_exact_size(available_size, egui::Sense::click_and_drag());
+            self.last_viewport_rect = viewport_rect;
             let painter = ui.painter_at(viewport_rect).with_clip_rect(viewport_rect);
 
             // Neutral Adwaita background
@@ -1582,38 +1817,23 @@ impl eframe::App for EditorApp {
             let is_middle_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle));
             let is_pan_active = self.current_tool == ToolMode::Pan || space_held || is_middle_down;
 
-            // HUD dimensions
-            let hud_w = 210.0;
-            let hud_h = 32.0;
-            let hud_margin = 16.0;
-            let hud_rect = Rect::from_min_size(
-                Pos2::new(
-                    viewport_rect.max.x - hud_w - hud_margin,
-                    viewport_rect.max.y - hud_h - hud_margin,
-                ),
-                Vec2::new(hud_w, hud_h),
-            );
-            let on_hud = response.hover_pos().map_or(false, |pos| hud_rect.contains(pos));
-
             // Mouse wheel Zoom and Pan gestures
             let is_ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
             let scroll_delta = ctx.input(|i| i.smooth_scroll_delta);
             let zoom_delta = ctx.input(|i| i.zoom_delta());
 
             if let Some(hover_pos) = response.hover_pos() {
-                if !on_hud {
-                    if is_ctrl && scroll_delta.y.abs() > 0.1 {
-                        let factor = if scroll_delta.y > 0.0 { 1.15 } else { 1.0 / 1.15 };
-                        self.zoom_by(factor, hover_pos, viewport_rect.min);
-                        self.clamp_pan(viewport_rect.size());
-                    } else if zoom_delta != 1.0 {
-                        self.zoom_by(zoom_delta, hover_pos, viewport_rect.min);
-                        self.clamp_pan(viewport_rect.size());
-                    } else if !is_ctrl && (scroll_delta.x.abs() > 0.1 || scroll_delta.y.abs() > 0.1) {
-                        self.pan_offset += scroll_delta;
-                        self.auto_fit = false;
-                        self.clamp_pan(viewport_rect.size());
-                    }
+                if is_ctrl && scroll_delta.y.abs() > 0.1 {
+                    let factor = if scroll_delta.y > 0.0 { 1.15 } else { 1.0 / 1.15 };
+                    self.zoom_by(factor, hover_pos, viewport_rect.min);
+                    self.clamp_pan(viewport_rect.size());
+                } else if zoom_delta != 1.0 {
+                    self.zoom_by(zoom_delta, hover_pos, viewport_rect.min);
+                    self.clamp_pan(viewport_rect.size());
+                } else if !is_ctrl && (scroll_delta.x.abs() > 0.1 || scroll_delta.y.abs() > 0.1) {
+                    self.pan_offset += scroll_delta;
+                    self.auto_fit = false;
+                    self.clamp_pan(viewport_rect.size());
                 }
             }
 
@@ -2055,7 +2275,7 @@ impl eframe::App for EditorApp {
             }
 
             // 3. Handle Single Click placement (StepBadge, Inline Text, or Selection)
-            if response.clicked() && !is_pan_active && !on_hud {
+            if response.clicked() && !is_pan_active {
                 if let Some(click_pos) = response.interact_pointer_pos() {
                     if canvas_rect.contains(click_pos) {
                         let img_x = ((click_pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w);
@@ -2182,7 +2402,7 @@ impl eframe::App for EditorApp {
                 }
             }
 
-            if response.double_clicked() && !is_pan_active && !on_hud && self.current_tool == ToolMode::Polygon && self.polygon_is_freeform {
+            if response.double_clicked() && !is_pan_active && self.current_tool == ToolMode::Polygon && self.polygon_is_freeform {
                 self.commit_freeform_polygon();
             }
 
@@ -2221,7 +2441,7 @@ impl eframe::App for EditorApp {
             // 5. Handle Dragging (Shapes, Moving Selected Items, Resizing Arrows, Adjusting Crop, and Smudge Brush)
             let mut cropped_now = false;
 
-            if !matches!(self.current_tool, ToolMode::StepBadge | ToolMode::Text | ToolMode::Pan) && !is_pan_active && !on_hud {
+            if !matches!(self.current_tool, ToolMode::StepBadge | ToolMode::Text | ToolMode::Pan) && !is_pan_active {
                 if response.drag_started() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         self.drag_start = Some(pos);
@@ -2658,9 +2878,19 @@ impl eframe::App for EditorApp {
                                 let rgb_code = format!("rgb({}, {}, {})", px[0], px[1], px[2]);
 
                                 let loupe_size = 92.0;
+                                let offset_x = if cursor_pos.x + 20.0 + loupe_size > viewport_rect.max.x {
+                                    -loupe_size - 20.0
+                                } else {
+                                    20.0
+                                };
+                                let offset_y = if cursor_pos.y + 20.0 + loupe_size + 30.0 > viewport_rect.max.y {
+                                    -loupe_size - 30.0
+                                } else {
+                                    20.0
+                                };
                                 let loupe_pos = Pos2::new(
-                                    (cursor_pos.x + 20.0).min(viewport_rect.max.x - loupe_size - 10.0),
-                                    (cursor_pos.y + 20.0).min(viewport_rect.max.y - loupe_size - 40.0),
+                                    (cursor_pos.x + offset_x).clamp(viewport_rect.min.x + 10.0, viewport_rect.max.x - loupe_size - 10.0),
+                                    (cursor_pos.y + offset_y).clamp(viewport_rect.min.y + 10.0, viewport_rect.max.y - loupe_size - 40.0),
                                 );
                                 let loupe_rect = Rect::from_min_size(loupe_pos, Vec2::splat(loupe_size));
 
@@ -2671,7 +2901,11 @@ impl eframe::App for EditorApp {
                                 painter.circle_filled(loupe_rect.center(), 12.0, pixel_color);
                                 painter.circle_stroke(loupe_rect.center(), 12.0, Stroke::new(1.0_f32, Color32::WHITE));
 
-                                let text_pos = Pos2::new(loupe_rect.min.x + 6.0, loupe_rect.max.y + 4.0);
+                                let text_pos = if loupe_rect.max.y + 28.0 > viewport_rect.max.y {
+                                    Pos2::new(loupe_rect.min.x + 6.0, loupe_rect.min.y - 24.0)
+                                } else {
+                                    Pos2::new(loupe_rect.min.x + 6.0, loupe_rect.max.y + 4.0)
+                                };
                                 painter.text(
                                     text_pos,
                                     egui::Align2::LEFT_TOP,
@@ -2684,46 +2918,6 @@ impl eframe::App for EditorApp {
                     }
                 }
             }
-
-            // 7. Floating Zoom & Viewport HUD Pill (GNOME Libadwaita Style)
-            let hud_bg = match self.theme_mode {
-                AdwaitaThemeMode::Dark => Color32::from_black_alpha(215),
-                AdwaitaThemeMode::Light => Color32::from_rgba_unmultiplied(255, 255, 255, 230),
-            };
-            painter.rect_filled(hud_rect, Rounding::same(16.0), hud_bg);
-            painter.rect_stroke(
-                hud_rect,
-                Rounding::same(16.0),
-                Stroke::new(1.0_f32, Color32::from_white_alpha(40)),
-            );
-
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(hud_rect), |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
-                    if ui.button("➖").on_hover_text("Reduzir Zoom (Ctrl + -)").clicked() {
-                        self.zoom_by(1.0 / 1.15, viewport_rect.center(), viewport_rect.min);
-                        self.clamp_pan(viewport_rect.size());
-                        self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
-                    }
-
-                    let zoom_pct = (self.zoom_scale * 100.0).round() as i32;
-                    if ui.button(format!("{}%", zoom_pct)).on_hover_text("Tamanho Real 100% (Ctrl + 1)").clicked() {
-                        self.set_zoom_100(viewport_rect);
-                        self.set_status("Zoom: 100% (1:1)");
-                    }
-
-                    if ui.button("➕").on_hover_text("Aumentar Zoom (Ctrl + +)").clicked() {
-                        self.zoom_by(1.15, viewport_rect.center(), viewport_rect.min);
-                        self.clamp_pan(viewport_rect.size());
-                        self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
-                    }
-
-                    if ui.button("⛶ Ajustar").on_hover_text("Ajustar à Janela (Ctrl + 0)").clicked() {
-                        self.fit_to_viewport(viewport_rect.size());
-                        self.set_status("Ajustado à janela");
-                    }
-                });
-            });
         });
 
         // 6. Settings Modal (Global Shortcuts Configuration and Conflict Detection)

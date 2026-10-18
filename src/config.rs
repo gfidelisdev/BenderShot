@@ -6,6 +6,15 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ToolbarPosition {
+    #[default]
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub setup_completed: bool,
@@ -20,6 +29,10 @@ pub struct AppConfig {
     pub latest_known_tag: Option<String>,
     #[serde(default)]
     pub installed_version_override: Option<String>,
+    #[serde(default)]
+    pub toolbar_position: ToolbarPosition,
+    #[serde(default)]
+    pub toolbar_expanded: bool,
 }
 
 impl Default for AppConfig {
@@ -36,6 +49,8 @@ impl Default for AppConfig {
             last_update_check_epoch: 0,
             latest_known_tag: None,
             installed_version_override: None,
+            toolbar_position: ToolbarPosition::Left,
+            toolbar_expanded: false,
         }
     }
 }
