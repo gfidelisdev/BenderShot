@@ -42,11 +42,16 @@ async fn main() -> Result<()> {
             bendershot::platform::linux::capture::ensure_portal_permissions();
 
             let mut ok = true;
-            if let Err(e) = bendershot::shortcuts::ShortcutManager::set_binding("Print") {
+            let default_capture = if cfg!(target_os = "windows") {
+                "Ctrl+Print"
+            } else {
+                "Print"
+            };
+            if let Err(e) = bendershot::shortcuts::ShortcutManager::set_binding(default_capture) {
                 eprintln!("Aviso: Falha ao configurar atalho de captura: {}", e);
                 ok = false;
             } else {
-                println!("✓ Tecla PrintScreen vinculada à captura do BenderShot.");
+                println!("✓ Atalho de captura vinculado ({}) ao BenderShot.", default_capture);
             }
             if let Err(e) = bendershot::shortcuts::ShortcutManager::set_window_binding("<Alt>Print") {
                 eprintln!("Aviso: Falha ao configurar atalho de janela: {}", e);

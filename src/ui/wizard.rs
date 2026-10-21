@@ -36,8 +36,13 @@ impl SetupWizardApp {
         let mut errors = Vec::new();
 
         if self.replace_print {
-            if let Err(e) = ShortcutManager::set_binding("Print") {
-                errors.push(format!("Atalho Print: {}", e));
+            let default_capture = if cfg!(target_os = "windows") {
+                "Ctrl+Print"
+            } else {
+                "Print"
+            };
+            if let Err(e) = ShortcutManager::set_binding(default_capture) {
+                errors.push(format!("Atalho Captura: {}", e));
             }
         }
 

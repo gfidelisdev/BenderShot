@@ -34,9 +34,11 @@ const ID_TRAY_SETTINGS: usize = 1005;
 const ID_TRAY_UPDATE: usize = 1006;
 const ID_TRAY_EXIT: usize = 1007;
 
-const HOTKEY_CAPTURE_ID: i32 = 1;
+const HOTKEY_FULL_ID: i32 = 1;
 const HOTKEY_CAPTURE_FALLBACK_ID: i32 = 2;
 const HOTKEY_RECORD_ID: i32 = 3;
+const HOTKEY_WINDOW_ID: i32 = 4;
+const HOTKEY_REGION_ID: i32 = 5;
 
 static EMBEDDED_ICON: &[u8] = include_bytes!("../../../packaging/assets/bendershot.ico");
 
@@ -131,41 +133,86 @@ fn load_tray_icon() -> HICON {
 
 unsafe fn register_all_hotkeys(hwnd: HWND) {
     unsafe {
-        UnregisterHotKey(hwnd, HOTKEY_CAPTURE_ID);
-        UnregisterHotKey(hwnd, HOTKEY_CAPTURE_FALLBACK_ID);
+        UnregisterHotKey(hwnd, HOTKEY_FULL_ID);
+        UnregisterHotKey(hwnd, HOTKEY_WINDOW_ID);
+        UnregisterHotKey(hwnd, HOTKEY_REGION_ID);
         UnregisterHotKey(hwnd, HOTKEY_RECORD_ID);
+        UnregisterHotKey(hwnd, HOTKEY_CAPTURE_FALLBACK_ID);
 
+        let mut registered_combos: Vec<(u32, u32)> = Vec::new();
+
+        // 1. Fullscreen Capture
         let cap_str = crate::platform::windows::shortcuts::ShortcutManager::get_current_binding();
         if let Some((mods, vk)) = crate::platform::windows::shortcuts::ShortcutManager::parse_hotkey(&cap_str) {
-            let res = RegisterHotKey(hwnd, HOTKEY_CAPTURE_ID, mods, vk);
+            let res = RegisterHotKey(hwnd, HOTKEY_FULL_ID, mods, vk);
             if res != 0 {
-                tracing::info!("Registered capture hotkey: {}", cap_str);
+                registered_combos.push((mods, vk));
+                tracing::info!("Registered full capture hotkey: {}", cap_str);
             } else {
-                tracing::warn!("Failed to register capture hotkey '{}' (may be held by Windows Snipping Tool)", cap_str);
-            }
-        }
-
-        // Always register Ctrl+Shift+S as backup unless already configured as primary
-        let fallback_parsed = crate::platform::windows::shortcuts::ShortcutManager::parse_hotkey("Ctrl+Shift+S");
-        if let Some((fb_mods, fb_vk)) = fallback_parsed {
-            let is_duplicate = if let Some((mods, vk)) = crate::platform::windows::shortcuts::ShortcutManager::parse_hotkey(&cap_str) {
-                mods == fb_mods && vk == fb_vk
-            } else {
-                false
-            };
-            if !is_duplicate {
-                RegisterHotKey(
-                    hwnd,
-                    HOTKEY_CAPTURE_FALLBACK_ID,
-                    fb_mods,
-                    fb_vk,
+                tracing::warn!(
+                    "Failed to register full capture hotkey '{}' (may be held by Windows Snipping Tool or another app)",
+                    cap_str
                 );
             }
         }
 
+        // 2. Active Window Capture
+        let win_str = crate::platform::windows::shortcuts::ShortcutManager::get_current_window_binding();
+        if let Some((mods, vk)) = crate::platform::windows::shortcuts::ShortcutManager::parse_hotkey(&win_str) {
+            if !registered_combos.contains(&(mods, vk)) {
+                let res = RegisterHotKey(hwnd, HOTKEY_WINDOW_ID, mods, vk);
+                if res != 0 {
+                    registered_combos.push((mods, vk));
+                    tracing::info!("Registered window capture hotkey: {}", win_str);
+                } else {
+                    tracing::warn!("Failed to register window capture hotkey '{}'", win_str);
+                }
+            } else {
+                tracing::warn!("Window capture hotkey '{}' duplicates another registered hotkey", win_str);
+            }
+        }
+
+        // 3. Region Capture
+        let reg_str = crate::platform::windows::shortcuts::ShortcutManager::get_current_region_binding();
+        if let Some((mods, vk)) = crate::platform::windows::shortcuts::ShortcutManager::parse_hotkey(&reg_str) {
+            if !registered_combos.contains(&(mods, vk)) {
+                let res = RegisterHotKey(hwnd, HOTKEY_REGION_ID, mods, vk);
+                if res != 0 {
+                    registered_combos.push((mods, vk));
+                    tracing::info!("Registered region capture hotkey: {}", reg_str);
+                } else {
+                    tracing::warn!("Failed to register region capture hotkey '{}'", reg_str);
+                }
+            } else {
+                tracing::warn!("Region capture hotkey '{}' duplicates another registered hotkey", reg_str);
+            }
+        }
+
+        // 4. Video Recording
         let rec_str = crate::platform::windows::shortcuts::ShortcutManager::get_current_record_binding();
         if let Some((mods, vk)) = crate::platform::windows::shortcuts::ShortcutManager::parse_hotkey(&rec_str) {
-            RegisterHotKey(hwnd, HOTKEY_RECORD_ID, mods, vk);
+            if !registered_combos.contains(&(mods, vk)) {
+                let res = RegisterHotKey(hwnd, HOTKEY_RECORD_ID, mods, vk);
+                if res != 0 {
+                    registered_combos.push((mods, vk));
+                    tracing::info!("Registered video record hotkey: {}", rec_str);
+                } else {
+                    tracing::warn!("Failed to register video record hotkey '{}'", rec_str);
+                }
+            } else {
+                tracing::warn!("Video record hotkey '{}' duplicates another registered hotkey", rec_str);
+            }
+        }
+
+        // 5. Fallback Ctrl+Shift+S (Region capture) if not already registered
+        let fallback_parsed = crate::platform::windows::shortcuts::ShortcutManager::parse_hotkey("Ctrl+Shift+S");
+        if let Some((fb_mods, fb_vk)) = fallback_parsed {
+            if !registered_combos.contains(&(fb_mods, fb_vk)) {
+                let res = RegisterHotKey(hwnd, HOTKEY_CAPTURE_FALLBACK_ID, fb_mods, fb_vk);
+                if res != 0 {
+                    tracing::info!("Registered fallback region capture hotkey: Ctrl+Shift+S");
+                }
+            }
         }
     }
 }
@@ -220,10 +267,20 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             WM_HOTKEY => {
                 let id = wparam as i32;
-                if id == HOTKEY_CAPTURE_ID || id == HOTKEY_CAPTURE_FALLBACK_ID {
-                    spawn_capture(CaptureMode::Region);
-                } else if id == HOTKEY_RECORD_ID {
-                    spawn_record();
+                match id {
+                    HOTKEY_FULL_ID => {
+                        spawn_capture(CaptureMode::Fullscreen);
+                    }
+                    HOTKEY_WINDOW_ID => {
+                        spawn_capture(CaptureMode::Window);
+                    }
+                    HOTKEY_REGION_ID | HOTKEY_CAPTURE_FALLBACK_ID => {
+                        spawn_capture(CaptureMode::Region);
+                    }
+                    HOTKEY_RECORD_ID => {
+                        spawn_record();
+                    }
+                    _ => {}
                 }
                 0
             }
@@ -313,9 +370,11 @@ pub async fn run_indicator() -> anyhow::Result<()> {
 
             // 6. Cleanup on exit
             Shell_NotifyIconW(NIM_DELETE, &nid);
-            UnregisterHotKey(hwnd, HOTKEY_CAPTURE_ID);
-            UnregisterHotKey(hwnd, HOTKEY_CAPTURE_FALLBACK_ID);
+            UnregisterHotKey(hwnd, HOTKEY_FULL_ID);
+            UnregisterHotKey(hwnd, HOTKEY_WINDOW_ID);
+            UnregisterHotKey(hwnd, HOTKEY_REGION_ID);
             UnregisterHotKey(hwnd, HOTKEY_RECORD_ID);
+            UnregisterHotKey(hwnd, HOTKEY_CAPTURE_FALLBACK_ID);
         }
     })
     .await?;

@@ -57,6 +57,7 @@ impl ShortcutManager {
             ("win+l", "Bloquear Estação de Trabalho do Windows"),
             ("win+d", "Exibir Área de Trabalho"),
             ("win+e", "Abrir Explorador de Arquivos"),
+            ("win+shift+s", "Ferramenta de Captura do Windows (Snipping Tool)"),
         ];
 
         for (res, desc) in reserved {
@@ -70,6 +71,15 @@ impl ShortcutManager {
             }
         }
 
+        if norm == "print" || norm == "printscreen" || norm == "prtscn" || norm == "snapshot" {
+            return Some(KeybindingConflict {
+                schema: "windows.system".to_string(),
+                key: "PrintScreen".to_string(),
+                binding: candidate_shortcut.to_string(),
+                description: "Tecla frequentemente capturada pela Ferramenta de Captura do Windows (recomendado: Ctrl+Print)".to_string(),
+            });
+        }
+
         None
     }
 
@@ -77,8 +87,7 @@ impl ShortcutManager {
     pub fn get_current_binding() -> String {
         let saved = read_saved_shortcuts();
         match saved.capture {
-            Some(ref s) if s.trim().eq_ignore_ascii_case("print") => "Ctrl+Print".to_string(),
-            Some(s) if !s.is_empty() => s,
+            Some(s) if !s.trim().is_empty() => s,
             _ => "Ctrl+Print".to_string(),
         }
     }
@@ -164,6 +173,16 @@ impl ShortcutManager {
                 "space" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SPACE as u32,
                 "insert" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_INSERT as u32,
                 "delete" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_DELETE as u32,
+                "home" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_HOME as u32,
+                "end" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_END as u32,
+                "pageup" | "prior" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_PRIOR as u32,
+                "pagedown" | "next" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_NEXT as u32,
+                "tab" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_TAB as u32,
+                "backspace" | "back" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_BACK as u32,
+                "enter" | "return" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN as u32,
+                "escape" | "esc" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE as u32,
+                "pause" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_PAUSE as u32,
+                "scroll" | "scrolllock" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SCROLL as u32,
                 "f1" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_F1 as u32,
                 "f2" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_F2 as u32,
                 "f3" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_F3 as u32,
@@ -176,10 +195,16 @@ impl ShortcutManager {
                 "f10" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_F10 as u32,
                 "f11" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_F11 as u32,
                 "f12" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_F12 as u32,
+                "plus" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_OEM_PLUS as u32,
+                "minus" => vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_OEM_MINUS as u32,
                 single if single.len() == 1 => {
                     let ch = single.chars().next().unwrap();
                     if ch.is_ascii_alphanumeric() {
                         vk = ch.to_ascii_uppercase() as u32;
+                    } else if ch == '+' || ch == '=' {
+                        vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_OEM_PLUS as u32;
+                    } else if ch == '-' || ch == '_' {
+                        vk = windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_OEM_MINUS as u32;
                     }
                 }
                 _ => {}
@@ -209,15 +234,92 @@ impl ShortcutManager {
         true
     }
 
-    pub fn configure_autostart(_enable: bool) -> Result<(), String> {
-        Ok(())
+    pub fn configure_autostart(enable: bool) -> Result<(), String> {
+        if let Ok(exe) = std::env::current_exe() {
+            let exe_str = exe.to_string_lossy();
+            if enable {
+                let cmd = format!("\"{}\" daemon", exe_str);
+                let res = std::process::Command::new("reg")
+                    .args([
+                        "add",
+                        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        "/v",
+                        "BenderShot",
+                        "/t",
+                        "REG_SZ",
+                        "/d",
+                        &cmd,
+                        "/f",
+                    ])
+                    .output();
+                match res {
+                    Ok(out) if out.status.success() => Ok(()),
+                    Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            } else {
+                let res = std::process::Command::new("reg")
+                    .args([
+                        "delete",
+                        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        "/v",
+                        "BenderShot",
+                        "/f",
+                    ])
+                    .output();
+                match res {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+        } else {
+            Err("Não foi possível obter o caminho do executável do BenderShot".to_string())
+        }
     }
 
     pub fn is_autostart_enabled() -> bool {
-        true
+        if let Ok(output) = std::process::Command::new("reg")
+            .args([
+                "query",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "/v",
+                "BenderShot",
+            ])
+            .output()
+        {
+            output.status.success()
+        } else {
+            false
+        }
     }
 
     pub fn start_daemon_if_not_running() -> Result<(), String> {
+        unsafe {
+            let class_name: Vec<u16> = "BenderShotTrayClass"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let hwnd = windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(class_name.as_ptr(), std::ptr::null());
+            if hwnd == 0 as _ {
+                if let Ok(exe) = std::env::current_exe() {
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        let _ = std::process::Command::new(exe)
+                            .arg("daemon")
+                            .creation_flags(CREATE_NO_WINDOW)
+                            .spawn();
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let _ = std::process::Command::new(exe)
+                            .arg("daemon")
+                            .spawn();
+                    }
+                }
+            }
+        }
         Ok(())
     }
 

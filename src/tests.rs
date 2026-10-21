@@ -367,6 +367,15 @@ fn test_windows_parse_hotkey() {
     assert_eq!(ShortcutManager::get_current_binding(), "Ctrl+Print");
     assert_eq!(ShortcutManager::get_current_window_binding(), "Alt+Print");
     assert_eq!(ShortcutManager::get_current_region_binding(), "Shift+Print");
+    assert_eq!(ShortcutManager::get_current_record_binding(), "Ctrl+Shift+R");
+
+    let p7 = ShortcutManager::parse_hotkey("<Alt><Shift>Home").expect("Should parse Home");
+    assert_eq!(p7.0, MOD_NOREPEAT | MOD_ALT | MOD_SHIFT);
+    assert_eq!(p7.1, windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_HOME as u32);
+
+    let conflict = ShortcutManager::detect_conflict("Win+Shift+S");
+    assert!(conflict.is_some());
+    assert!(conflict.unwrap().description.contains("Snipping Tool"));
 }
 
 #[test]
