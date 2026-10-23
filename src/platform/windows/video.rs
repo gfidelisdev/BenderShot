@@ -4,24 +4,24 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use anyhow::Result;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse,
-    EndPaint, FillRect, FrameRgn, GetStockObject, InvalidateRect, SelectObject, SetBkMode,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateRoundRectRgn,
+    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, FrameRgn,
+    GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint, SelectObject, SetBkMode,
     SetTextColor, SetWindowRgn, UpdateWindow, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD,
-    FW_NORMAL, NULL_PEN, PAINTSTRUCT, TRANSPARENT,
+    FW_NORMAL, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, NULL_PEN, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-    GetSystemMetrics, PeekMessageW, PostQuitMessage, RegisterClassW,
-    SetLayeredWindowAttributes, ShowWindow, TranslateMessage,
-    CS_HREDRAW, CS_VREDRAW, HTTRANSPARENT, LWA_ALPHA,
-    MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE, WM_DESTROY, WM_NCHITTEST,
-    WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
+    GetSystemMetrics, PeekMessageW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage,
+    CS_HREDRAW, CS_VREDRAW, HTTRANSPARENT, MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
+    SW_SHOWNOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WNDCLASSW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 static CURRENT_COUNT: AtomicU32 = AtomicU32::new(3);
@@ -95,6 +95,7 @@ unsafe extern "system" fn countdown_wnd_proc(
     unsafe {
         match msg {
             WM_NCHITTEST => HTTRANSPARENT as LRESULT,
+            WM_ERASEBKGND => 1 as LRESULT, // Prevent flickering during repaints
             WM_PAINT => {
                 let mut ps: PAINTSTRUCT = std::mem::zeroed();
                 let hdc = BeginPaint(hwnd, &mut ps);
@@ -102,74 +103,90 @@ unsafe extern "system" fn countdown_wnd_proc(
                     let mut rc: RECT = std::mem::zeroed();
                     GetClientRect(hwnd, &mut rc);
 
+                    // Double-buffering: draw to memory DC then BitBlt to avoid flicker
+                    let mem_dc = CreateCompatibleDC(hdc);
+                    let mem_bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+                    let old_bmp = SelectObject(mem_dc, mem_bmp as _);
+
                     // 1. Dark pill background
-                    let bg_color = rgb(24, 25, 30);
+                    let bg_color = rgb(22, 24, 30);
                     let bg_brush = CreateSolidBrush(bg_color);
-                    FillRect(hdc, &rc, bg_brush);
+                    FillRect(mem_dc, &rc, bg_brush);
                     DeleteObject(bg_brush as _);
 
                     // 2. Subtle outer border
                     let border_rgn = CreateRoundRectRgn(0, 0, rc.right, rc.bottom, 22, 22);
-                    let border_brush = CreateSolidBrush(rgb(65, 70, 85));
-                    FrameRgn(hdc, border_rgn, border_brush, 1, 1);
+                    let border_brush = CreateSolidBrush(rgb(75, 82, 100));
+                    FrameRgn(mem_dc, border_rgn, border_brush, 2, 2);
                     DeleteObject(border_brush as _);
                     DeleteObject(border_rgn as _);
 
                     // 3. Red recording dot
                     let dot_brush = CreateSolidBrush(rgb(235, 52, 52));
-                    let old_brush = SelectObject(hdc, dot_brush as _);
+                    let old_brush = SelectObject(mem_dc, dot_brush as _);
                     let null_pen = GetStockObject(NULL_PEN);
-                    let old_pen = SelectObject(hdc, null_pen);
-                    Ellipse(hdc, 22, 20, 36, 34);
-                    SelectObject(hdc, old_pen);
-                    SelectObject(hdc, old_brush);
+                    let old_pen = SelectObject(mem_dc, null_pen);
+                    Ellipse(mem_dc, 20, 20, 36, 36);
+                    SelectObject(mem_dc, old_pen);
+                    SelectObject(mem_dc, old_brush);
                     DeleteObject(dot_brush as _);
 
                     // 4. Texts
-                    SetBkMode(hdc, TRANSPARENT as _);
+                    SetBkMode(mem_dc, TRANSPARENT as _);
 
                     let count = CURRENT_COUNT.load(Ordering::SeqCst);
-                    let title_text = format!("Gravação começa em {}…", count);
+                    let title_text = format!("Iniciando gravação em {}…", count);
                     let title_w = to_wide(&title_text);
 
                     let font_title = CreateFontW(
-                        -18, 0, 0, 0,
+                        -15, 0, 0, 0,
                         FW_BOLD as _,
                         0, 0, 0, 1, 0, 0, 5, 0,
                         to_wide("Segoe UI").as_ptr(),
                     );
-                    let old_font = SelectObject(hdc, font_title as _);
-                    SetTextColor(hdc, rgb(255, 255, 255));
+                    let old_font = SelectObject(mem_dc, font_title as _);
+                    SetTextColor(mem_dc, rgb(255, 255, 255));
                     let mut title_rc = RECT {
-                        left: 46,
-                        top: 13,
-                        right: rc.right - 12,
-                        bottom: 37,
+                        left: 48,
+                        top: 10,
+                        right: rc.right - 14,
+                        bottom: 30,
                     };
-                    DrawTextW(hdc, title_w.as_ptr(), -1, &mut title_rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    DrawTextW(mem_dc, title_w.as_ptr(), -1, &mut title_rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
                     let font_sub = CreateFontW(
-                        -13, 0, 0, 0,
+                        -12, 0, 0, 0,
                         FW_NORMAL as _,
                         0, 0, 0, 1, 0, 0, 5, 0,
                         to_wide("Segoe UI").as_ptr(),
                     );
-                    SelectObject(hdc, font_sub as _);
-                    SetTextColor(hdc, rgb(165, 170, 185));
+                    SelectObject(mem_dc, font_sub as _);
+                    SetTextColor(mem_dc, rgb(165, 172, 190));
                     let sc = SHORTCUT_LABEL.lock().unwrap();
-                    let sub_text = format!("Pressione {} novamente para finalizar", *sc);
+                    let sub_text = if sc.is_empty() {
+                        "Pressione o atalho para finalizar".to_string()
+                    } else {
+                        format!("Pressione {} para finalizar", *sc)
+                    };
                     let sub_w = to_wide(&sub_text);
                     let mut sub_rc = RECT {
-                        left: 46,
-                        top: 39,
-                        right: rc.right - 12,
-                        bottom: 59,
+                        left: 48,
+                        top: 31,
+                        right: rc.right - 14,
+                        bottom: 49,
                     };
-                    DrawTextW(hdc, sub_w.as_ptr(), -1, &mut sub_rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    DrawTextW(mem_dc, sub_w.as_ptr(), -1, &mut sub_rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
-                    SelectObject(hdc, old_font);
+                    // Blit memory buffer to window
+                    BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem_dc, 0, 0, SRCCOPY);
+
+                    // Cleanup
+                    SelectObject(mem_dc, old_font);
                     DeleteObject(font_title as _);
                     DeleteObject(font_sub as _);
+                    SelectObject(mem_dc, old_bmp);
+                    DeleteObject(mem_bmp as _);
+                    DeleteDC(mem_dc);
 
                     EndPaint(hwnd, &ps);
                 }
@@ -189,13 +206,14 @@ fn run_countdown_hud(shortcut: &str, flag: &Path) -> Result<bool> {
     CANCELLED_COUNTDOWN.store(false, Ordering::SeqCst);
 
     unsafe {
+        let hinstance = GetModuleHandleW(std::ptr::null());
         let class_name = to_wide("BenderShotCountdownHUD");
         let wnd_class = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(countdown_wnd_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
-            hInstance: 0 as _,
+            hInstance: hinstance,
             hIcon: 0 as _,
             hCursor: 0 as _,
             hbrBackground: 0 as _,
@@ -204,14 +222,30 @@ fn run_countdown_hud(shortcut: &str, flag: &Path) -> Result<bool> {
         };
         RegisterClassW(&wnd_class);
 
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let banner_w = 460;
-        let banner_h = 70;
-        let x = (screen_w - banner_w) / 2;
-        let y = 48;
+        // Detect screen / monitor where the cursor currently is
+        let mut pt: POINT = std::mem::zeroed();
+        GetCursorPos(&mut pt);
+        let hmonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+        let mut minfo: MONITORINFO = std::mem::zeroed();
+        minfo.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+
+        let (screen_left, screen_top, screen_w) = if GetMonitorInfoW(hmonitor, &mut minfo) != 0 {
+            (
+                minfo.rcMonitor.left,
+                minfo.rcMonitor.top,
+                minfo.rcMonitor.right - minfo.rcMonitor.left,
+            )
+        } else {
+            (0, 0, GetSystemMetrics(SM_CXSCREEN))
+        };
+
+        let banner_w = 340;
+        let banner_h = 56;
+        let x = screen_left + (screen_w - banner_w) / 2;
+        let y = screen_top + 28;
 
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class_name.as_ptr(),
             to_wide("BenderShot Recording Countdown").as_ptr(),
             WS_POPUP,
@@ -221,7 +255,7 @@ fn run_countdown_hud(shortcut: &str, flag: &Path) -> Result<bool> {
             banner_h,
             0 as _,
             0 as _,
-            0 as _,
+            hinstance,
             std::ptr::null(),
         );
 
@@ -229,21 +263,18 @@ fn run_countdown_hud(shortcut: &str, flag: &Path) -> Result<bool> {
             return Ok(true);
         }
 
-        let rgn = CreateRoundRectRgn(0, 0, banner_w, banner_h, 22, 22);
+        let rgn = CreateRoundRectRgn(0, 0, banner_w + 1, banner_h + 1, 22, 22);
         SetWindowRgn(hwnd, rgn, 1);
-        SetLayeredWindowAttributes(hwnd, 0, 245, LWA_ALPHA);
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         UpdateWindow(hwnd);
 
         for n in (1..=3).rev() {
             CURRENT_COUNT.store(n, Ordering::SeqCst);
-            InvalidateRect(hwnd, std::ptr::null(), 1);
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            UpdateWindow(hwnd);
 
-            send_notification(
-                &format!("🔴 Gravação começa em {}…", n),
-                &format!("Pressione {} novamente para finalizar.", shortcut),
-                "media-record",
-            );
+            // Toast notifications during countdown are REMOVED entirely!
+            // Only the mini-window HUD on top of the screen displays the countdown.
 
             let start = std::time::Instant::now();
             while start.elapsed() < std::time::Duration::from_millis(1000) {
@@ -260,6 +291,7 @@ fn run_countdown_hud(shortcut: &str, flag: &Path) -> Result<bool> {
             }
         }
 
+        // Destroy countdown window immediately before starting the video capture
         DestroyWindow(hwnd);
         let mut msg: MSG = std::mem::zeroed();
         while PeekMessageW(&mut msg, 0 as _, 0, 0, PM_REMOVE) != 0 {
@@ -269,7 +301,7 @@ fn run_countdown_hud(shortcut: &str, flag: &Path) -> Result<bool> {
     }
 
     // Brief delay to allow desktop compositor to refresh before capturing first frame
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    std::thread::sleep(std::time::Duration::from_millis(100));
     Ok(true)
 }
 

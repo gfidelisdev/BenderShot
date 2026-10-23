@@ -4,28 +4,40 @@ use std::path::Path;
 use crate::capture::{CaptureMode, MonitorLayout, RegionSelection};
 use xcap::Monitor;
 
-use windows_sys::Win32::Foundation::{HWND, RECT};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, RECT};
 use windows_sys::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetWindowDC,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
+    GetWindowDC, IntersectRect, MonitorFromWindow, ReleaseDC, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    SRCCOPY,
 };
 use windows_sys::Win32::Storage::Xps::PrintWindow;
-use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::HiDpi::{
+    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetTopWindow, GetWindow,
+    GetAncestor, GetClassNameW, GetDesktopWindow, GetForegroundWindow,
+    GetLayeredWindowAttributes, GetShellWindow, GetSystemMetrics, GetTopWindow, GetWindow,
     GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText, IsIconic,
-    IsWindowVisible, SetProcessDPIAware, GWL_EXSTYLE, GW_HWNDNEXT, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    IsWindow, IsWindowVisible, IsZoomed, SetForegroundWindow, SetProcessDPIAware, ShowWindow,
+    GA_ROOT, GA_ROOTOWNER, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV, LWA_ALPHA, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNOACTIVATE,
+    WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
 const PW_RENDERFULLCONTENT: u32 = 0x00000002;
 
-fn ensure_dpi_aware() {
+pub fn ensure_dpi_aware() {
     unsafe {
-        SetProcessDPIAware();
+        if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0 {
+            SetProcessDPIAware();
+        }
     }
 }
 
@@ -136,6 +148,45 @@ fn capture_monitors() -> Result<RgbaImage> {
     Ok(combined)
 }
 
+/// Checks if `pid` belongs to any running instance of `bendershot.exe` by inspecting
+/// the kernel process image name rather than the window title (so windows like VS Code
+/// or Explorer with "BenderShot" in their title are never falsely skipped).
+unsafe fn is_bendershot_process(pid: u32, current_pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    if pid == current_pid {
+        return true;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 as _ {
+            return false;
+        }
+        let mut buf = [0u16; 512];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if ok != 0 && size > 0 {
+            let path_str = String::from_utf16_lossy(&buf[..size as usize]).to_lowercase();
+            if path_str.ends_with("\\bendershot.exe") || path_str.ends_with("/bendershot.exe") {
+                return true;
+            }
+            if let Ok(cur_exe) = std::env::current_exe() {
+                if let Some(cur_name) = cur_exe.file_name().and_then(|n| n.to_str()) {
+                    let cur_lower = cur_name.to_lowercase();
+                    if path_str.ends_with(&format!("\\{}", cur_lower))
+                        || path_str.ends_with(&format!("/{}", cur_lower))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
 unsafe fn get_window_visible_rect(hwnd: HWND) -> Option<RECT> {
     unsafe {
         let mut rect: RECT = std::mem::zeroed();
@@ -150,6 +201,24 @@ unsafe fn get_window_visible_rect(hwnd: HWND) -> Option<RECT> {
                 return None;
             }
         }
+
+        // When a window is maximized on Windows 10/11, its frame bounds extend ~8px outside
+        // the monitor edges. Clamp to the monitor's rect so we don't capture adjacent monitors
+        // or out-of-bounds black borders.
+        if IsZoomed(hwnd) != 0 {
+            let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if hmon != 0 as _ {
+                let mut minfo: MONITORINFO = std::mem::zeroed();
+                minfo.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                if GetMonitorInfoW(hmon, &mut minfo) != 0 {
+                    rect.left = rect.left.max(minfo.rcMonitor.left);
+                    rect.top = rect.top.max(minfo.rcMonitor.top);
+                    rect.right = rect.right.min(minfo.rcMonitor.right);
+                    rect.bottom = rect.bottom.min(minfo.rcMonitor.bottom);
+                }
+            }
+        }
+
         if (rect.right - rect.left) > 0 && (rect.bottom - rect.top) > 0 {
             Some(rect)
         } else {
@@ -163,29 +232,45 @@ unsafe fn is_capturable_app_window(
     current_pid: u32,
     desktop_hwnd: HWND,
     shell_hwnd: HWND,
+    require_title: bool,
 ) -> bool {
     unsafe {
         if hwnd == 0 as _ || hwnd == desktop_hwnd || hwnd == shell_hwnd {
             return false;
         }
-        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+        if IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
             return false;
         }
 
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid == current_pid {
+        if is_bendershot_process(pid, current_pid) {
             return false;
         }
 
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
         let is_app_window = (ex_style & WS_EX_APPWINDOW) != 0;
         if !is_app_window
-            && ((ex_style & WS_EX_TOOLWINDOW) != 0
-                || (ex_style & WS_EX_NOACTIVATE) != 0
-                || (ex_style & WS_EX_TRANSPARENT) != 0)
+            && ((ex_style & WS_EX_TOOLWINDOW) != 0 || (ex_style & WS_EX_NOACTIVATE) != 0)
         {
             return false;
+        }
+
+        // Skip click-through transparent overlays (e.g. GPU/gaming/screen overlays)
+        if (ex_style & WS_EX_TRANSPARENT) != 0 && (ex_style & WS_EX_LAYERED) != 0 {
+            return false;
+        }
+
+        // Skip invisible layered windows (alpha ~ 0)
+        if (ex_style & WS_EX_LAYERED) != 0 {
+            let mut cr = 0u32;
+            let mut alpha = 255u8;
+            let mut flags = 0u32;
+            if GetLayeredWindowAttributes(hwnd, &mut cr, &mut alpha, &mut flags) != 0 {
+                if (flags & LWA_ALPHA) != 0 && alpha < 10 {
+                    return false;
+                }
+            }
         }
 
         let mut cloaked: u32 = 0;
@@ -206,6 +291,7 @@ unsafe fn is_capturable_app_window(
             if matches!(
                 class_name.as_str(),
                 "BenderShotTrayClass"
+                    | "BenderShotCountdownHUD"
                     | "Shell_TrayWnd"
                     | "Shell_SecondaryTrayWnd"
                     | "NotifyIconOverflowWindow"
@@ -214,49 +300,173 @@ unsafe fn is_capturable_app_window(
                     | "WorkerW"
                     | "Windows.UI.Core.CoreWindow"
                     | "XamlExplorerHostIslandWindow"
+                    | "CEF-OSC-WIDGET"
+                    | "IME"
+                    | "MSCTFIME UI"
+                    | "DummyDWMListenerWindow"
+                    | "EdgeUiInputTopWndClass"
+                    | "EdgeUiInputWndClass"
             ) {
                 return false;
             }
         }
 
-        // InternalGetWindowText reads kernel window metadata directly without sending WM_GETTEXT,
-        // avoiding any risk of blocking on unresponsive background processes.
-        let mut title_buf = [0u16; 256];
-        let title_len = InternalGetWindowText(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
-        if title_len > 0 {
-            let title = String::from_utf16_lossy(&title_buf[..title_len as usize]).to_lowercase();
-            if title.contains("bendershot") {
+        if require_title {
+            let mut title_buf = [0u16; 256];
+            let title_len =
+                InternalGetWindowText(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
+            if title_len <= 0 {
+                return false;
+            }
+            let title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
+            if title.trim().is_empty() {
                 return false;
             }
         }
 
         match get_window_visible_rect(hwnd) {
-            Some(r) => (r.right - r.left) > 100 && (r.bottom - r.top) > 100,
+            Some(r) => (r.right - r.left) > 50 && (r.bottom - r.top) > 50,
             None => false,
         }
     }
 }
 
-unsafe fn find_target_foreground_window() -> Option<HWND> {
+pub unsafe fn find_target_foreground_window() -> Option<HWND> {
     unsafe {
+        ensure_dpi_aware();
         let current_pid = GetCurrentProcessId();
         let desktop_hwnd = GetDesktopWindow();
         let shell_hwnd = GetShellWindow();
 
-        let fg = GetForegroundWindow();
-        if is_capturable_app_window(fg, current_pid, desktop_hwnd, shell_hwnd) {
-            return Some(fg);
+        // 1. Check if the daemon locked in the exact target HWND at the instant the shortcut/tray was triggered
+        if let Ok(val) = std::env::var("BENDERSHOT_TARGET_HWND") {
+            if let Ok(raw) = val.trim().parse::<usize>() {
+                if raw != 0 {
+                    let candidate = raw as HWND;
+                    let root = GetAncestor(candidate, GA_ROOT);
+                    let target = if root != 0 as _ { root } else { candidate };
+                    if is_capturable_app_window(
+                        target,
+                        current_pid,
+                        desktop_hwnd,
+                        shell_hwnd,
+                        false,
+                    ) {
+                        return Some(target);
+                    }
+                }
+            }
         }
 
-        // Walk Z-order from top to bottom to find the topmost user application window
+        // 2. Check current foreground window (with brief retry in case Alt key / focus transition temporarily yields 0)
+        for attempt in 0..5 {
+            let fg = GetForegroundWindow();
+            if fg != 0 as _ {
+                let root = GetAncestor(fg, GA_ROOT);
+                let target = if root != 0 as _ { root } else { fg };
+                if is_capturable_app_window(target, current_pid, desktop_hwnd, shell_hwnd, false) {
+                    return Some(target);
+                }
+                break;
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+        }
+
+        // 3. Walk Z-order from top to bottom to find the topmost visible titled user application window
         let mut next = GetTopWindow(0 as _);
         while next != 0 as _ {
-            if is_capturable_app_window(next, current_pid, desktop_hwnd, shell_hwnd) {
+            if is_capturable_app_window(next, current_pid, desktop_hwnd, shell_hwnd, true) {
                 return Some(next);
             }
             next = GetWindow(next, GW_HWNDNEXT);
         }
         None
+    }
+}
+
+/// Checks whether `target_hwnd` is completely within the virtual screen and not occluded
+/// by any other visible application window above it in Z-order.
+unsafe fn is_window_unobscured_on_screen(target_hwnd: HWND, vis_rect: &RECT) -> bool {
+    unsafe {
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if vw > 0 && vh > 0 {
+            if vis_rect.left < vx - 2
+                || vis_rect.top < vy - 2
+                || vis_rect.right > vx + vw + 2
+                || vis_rect.bottom > vy + vh + 2
+            {
+                return false;
+            }
+        }
+
+        let current_pid = GetCurrentProcessId();
+        let desktop_hwnd = GetDesktopWindow();
+        let shell_hwnd = GetShellWindow();
+
+        let mut prev = GetWindow(target_hwnd, GW_HWNDPREV);
+        while prev != 0 as _ {
+            // Owned popups/dialogs belonging to target_hwnd itself are part of the target app
+            let root_owner = GetAncestor(prev, GA_ROOTOWNER);
+            if root_owner != target_hwnd
+                && is_capturable_app_window(prev, current_pid, desktop_hwnd, shell_hwnd, true)
+            {
+                if let Some(other_rect) = get_window_visible_rect(prev) {
+                    let mut overlap: RECT = std::mem::zeroed();
+                    if IntersectRect(&mut overlap, vis_rect, &other_rect) != 0 {
+                        return false;
+                    }
+                }
+            }
+            prev = GetWindow(prev, GW_HWNDPREV);
+        }
+        true
+    }
+}
+
+/// Temporarily hides any visible `bendershot.exe` windows (such as an existing Editor window)
+/// so they never occlude the target window during capture.
+unsafe fn hide_visible_bendershot_windows() -> Vec<HWND> {
+    let mut hidden = Vec::new();
+    unsafe {
+        let current_pid = GetCurrentProcessId();
+        let mut next = GetTopWindow(0 as _);
+        while next != 0 as _ {
+            if IsWindowVisible(next) != 0 && IsIconic(next) == 0 {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(next, &mut pid);
+                if is_bendershot_process(pid, current_pid) {
+                    let mut class_buf = [0u16; 128];
+                    let class_len =
+                        GetClassNameW(next, class_buf.as_mut_ptr(), class_buf.len() as i32);
+                    let class_name = if class_len > 0 {
+                        String::from_utf16_lossy(&class_buf[..class_len as usize])
+                    } else {
+                        String::new()
+                    };
+                    if class_name != "BenderShotTrayClass" {
+                        ShowWindow(next, SW_HIDE);
+                        hidden.push(next);
+                    }
+                }
+            }
+            next = GetWindow(next, GW_HWNDNEXT);
+        }
+    }
+    hidden
+}
+
+unsafe fn restore_bendershot_windows(hidden: &[HWND]) {
+    unsafe {
+        for &h in hidden {
+            if IsWindow(h) != 0 {
+                ShowWindow(h, SW_SHOWNOACTIVATE);
+            }
+        }
     }
 }
 
@@ -312,7 +522,7 @@ unsafe fn capture_hwnd_print_window(hwnd: HWND, vis_rect: &RECT) -> Option<RgbaI
             let src = std::slice::from_raw_parts(bits as *const u8, (win_w * win_h * 4) as usize);
             let row_bytes = (crop_w as usize) * 4;
             let mut rgba = vec![0u8; (crop_w * crop_h * 4) as usize];
-            let mut has_non_zero_rgb = false;
+            let mut non_zero_pixels = 0usize;
             for row in 0..crop_h {
                 let src_start = ((crop_y + row) * win_w + crop_x) as usize * 4;
                 let dst_start = (row as usize) * row_bytes;
@@ -323,10 +533,12 @@ unsafe fn capture_hwnd_print_window(hwnd: HWND, vis_rect: &RECT) -> Option<RgbaI
                 px.swap(0, 2);
                 px[3] = 255;
                 if (px[0] | px[1] | px[2]) != 0 {
-                    has_non_zero_rgb = true;
+                    non_zero_pixels += 1;
                 }
             }
-            if has_non_zero_rgb {
+            let total_pixels = (crop_w as usize) * (crop_h as usize);
+            // Require at least 5% non-black pixels so a failed black client area is rejected
+            if total_pixels > 0 && non_zero_pixels * 20 >= total_pixels {
                 RgbaImage::from_raw(crop_w as u32, crop_h as u32, rgba)
             } else {
                 None
@@ -347,8 +559,24 @@ unsafe fn capture_hwnd_print_window(hwnd: HWND, vis_rect: &RECT) -> Option<RgbaI
 /// Captures a screen rectangle directly from the desktop DC via `BitBlt`.
 unsafe fn capture_screen_rect(rect: &RECT) -> Option<RgbaImage> {
     unsafe {
-        let w = rect.right - rect.left;
-        let h = rect.bottom - rect.top;
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+        let (left, top, right, bottom) = if vw > 0 && vh > 0 {
+            (
+                rect.left.max(vx),
+                rect.top.max(vy),
+                rect.right.min(vx + vw),
+                rect.bottom.min(vy + vh),
+            )
+        } else {
+            (rect.left, rect.top, rect.right, rect.bottom)
+        };
+
+        let w = right - left;
+        let h = bottom - top;
         if w <= 0 || h <= 0 {
             return None;
         }
@@ -380,7 +608,17 @@ unsafe fn capture_screen_rect(rect: &RECT) -> Option<RgbaImage> {
         }
 
         let old_obj = SelectObject(mem_dc, hbmp);
-        let ok = BitBlt(mem_dc, 0, 0, w, h, screen_dc, rect.left, rect.top, SRCCOPY);
+        let ok = BitBlt(
+            mem_dc,
+            0,
+            0,
+            w,
+            h,
+            screen_dc,
+            left,
+            top,
+            SRCCOPY | CAPTUREBLT,
+        );
 
         let result = if ok != 0 {
             let src = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize);
@@ -406,13 +644,40 @@ unsafe fn capture_screen_rect(rect: &RECT) -> Option<RgbaImage> {
 fn capture_active_window() -> Result<RgbaImage> {
     unsafe {
         if let Some(target_hwnd) = find_target_foreground_window() {
-            if let Some(vis_rect) = get_window_visible_rect(target_hwnd) {
-                if let Some(img) = capture_hwnd_print_window(target_hwnd, &vis_rect) {
-                    return Ok(img);
+            let hidden_bs = hide_visible_bendershot_windows();
+            let fg = GetForegroundWindow();
+            let root_fg = if fg != 0 as _ {
+                let r = GetAncestor(fg, GA_ROOT);
+                if r != 0 as _ { r } else { fg }
+            } else {
+                0 as _
+            };
+
+            if root_fg != target_hwnd {
+                SetForegroundWindow(target_hwnd);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            } else if !hidden_bs.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+
+            let captured = if let Some(vis_rect) = get_window_visible_rect(target_hwnd) {
+                if is_window_unobscured_on_screen(target_hwnd, &vis_rect) {
+                    // Window is completely visible on top of the screen: capture live DWM pixels first
+                    capture_screen_rect(&vis_rect)
+                        .or_else(|| capture_hwnd_print_window(target_hwnd, &vis_rect))
+                } else {
+                    // Window is partially off-screen or behind an always-on-top window: try PrintWindow first
+                    capture_hwnd_print_window(target_hwnd, &vis_rect)
+                        .or_else(|| capture_screen_rect(&vis_rect))
                 }
-                if let Some(img) = capture_screen_rect(&vis_rect) {
-                    return Ok(img);
-                }
+            } else {
+                None
+            };
+
+            restore_bendershot_windows(&hidden_bs);
+
+            if let Some(img) = captured {
+                return Ok(img);
             }
         }
     }

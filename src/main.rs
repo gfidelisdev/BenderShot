@@ -41,7 +41,7 @@ fn report_fatal_error(msg: &str) {
 async fn real_main() -> Result<()> {
     #[cfg(target_os = "windows")]
     unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
+        bendershot::platform::windows::capture::ensure_dpi_aware();
         windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS);
     }
 

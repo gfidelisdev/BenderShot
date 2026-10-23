@@ -51,6 +51,7 @@ const HOTKEY_WINDOW_ID: i32 = 4;
 const HOTKEY_REGION_ID: i32 = 5;
 
 static EMBEDDED_ICON: &[u8] = include_bytes!("../../../packaging/assets/bendershot.ico");
+static LAST_TARGET_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -66,7 +67,25 @@ pub fn hide_console_window() {
     }
 }
 
+fn spawn_window_capture(target_hwnd: HWND) {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cmd = Command::new(exe);
+        cmd.arg("window").creation_flags(CREATE_NO_WINDOW);
+        if target_hwnd != 0 as _ {
+            cmd.env("BENDERSHOT_TARGET_HWND", (target_hwnd as usize).to_string());
+        }
+        let _ = cmd.spawn();
+    }
+}
+
 pub fn spawn_capture(mode: CaptureMode) {
+    if mode == CaptureMode::Window {
+        let target = unsafe {
+            crate::platform::windows::capture::find_target_foreground_window().unwrap_or(0 as _)
+        };
+        spawn_window_capture(target);
+        return;
+    }
     if let Ok(exe) = std::env::current_exe() {
         let arg = match mode {
             CaptureMode::Region => "region",
@@ -255,6 +274,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let event = lparam as u32;
                 match event {
                     WM_RBUTTONUP => {
+                        if let Some(target) = crate::platform::windows::capture::find_target_foreground_window() {
+                            LAST_TARGET_HWND.store(target as usize, std::sync::atomic::Ordering::SeqCst);
+                        }
                         let hmenu = CreatePopupMenu();
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_REGION, to_wide("📸 Capturar Região").as_ptr());
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_FULL, to_wide("🖥️ Capturar Tela Cheia").as_ptr());
@@ -285,7 +307,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 match id {
                     ID_TRAY_REGION => spawn_capture(CaptureMode::Region),
                     ID_TRAY_FULL => spawn_capture(CaptureMode::Fullscreen),
-                    ID_TRAY_WINDOW => spawn_capture(CaptureMode::Window),
+                    ID_TRAY_WINDOW => {
+                        let saved = LAST_TARGET_HWND.load(std::sync::atomic::Ordering::SeqCst) as HWND;
+                        let target = if saved != 0 as _ {
+                            saved
+                        } else {
+                            crate::platform::windows::capture::find_target_foreground_window().unwrap_or(0 as _)
+                        };
+                        spawn_window_capture(target);
+                    }
                     ID_TRAY_RECORD => spawn_record(),
                     ID_TRAY_SETTINGS => spawn_settings(),
                     ID_TRAY_UPDATE => spawn_update(),
@@ -303,7 +333,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         spawn_capture(CaptureMode::Fullscreen);
                     }
                     HOTKEY_WINDOW_ID => {
-                        spawn_capture(CaptureMode::Window);
+                        let target = crate::platform::windows::capture::find_target_foreground_window().unwrap_or(0 as _);
+                        spawn_window_capture(target);
                     }
                     HOTKEY_REGION_ID | HOTKEY_CAPTURE_FALLBACK_ID => {
                         spawn_capture(CaptureMode::Region);

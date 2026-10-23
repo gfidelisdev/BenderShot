@@ -93,7 +93,7 @@ fi
 # 4. Git add & commit
 echo ""
 echo -e "${YELLOW}==> Adicionando alterações ao git...${RESET}"
-git add Cargo.toml Cargo.lock packaging/rpm/bendershot.spec packaging/windows/bendershot.iss src/ new-release.sh
+git add Cargo.toml Cargo.lock packaging/rpm/bendershot.spec packaging/windows/bendershot.iss src/ new-release.sh new-release.ps1
 
 # Adiciona arquivos modificados no repositório caso haja outros pendentes do código
 git add -u

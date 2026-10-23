@@ -1,5 +1,5 @@
 #define MyAppName "BenderShot"
-#define MyAppVersion "0.4.4"
+#define MyAppVersion "0.4.5"
 #define MyAppPublisher "BenderShot Team"
 #define MyAppURL "https://github.com/gfidelis/BenderShot"
 #define MyAppExeName "bendershot.exe"

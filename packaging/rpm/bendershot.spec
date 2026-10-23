@@ -1,7 +1,7 @@
 %{!?_userunitdir: %global _userunitdir /usr/lib/systemd/user}
 
 Name:           bendershot
-Version:        0.4.4
+Version:        0.4.5
 Release:        0%{?dist}
 Summary:        Captura, gravação e anotação profissional de tela para Linux Wayland
 License:        MIT OR Apache-2.0
