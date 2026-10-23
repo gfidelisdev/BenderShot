@@ -331,7 +331,29 @@ impl ShortcutManager {
         Ok(())
     }
 
-    pub fn send_notification(_summary: &str, _body: &str) {
+    pub fn send_notification(summary: &str, body: &str) {
+        unsafe {
+            let class_name: Vec<u16> = "BenderShotTrayClass"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let hwnd = windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(class_name.as_ptr(), std::ptr::null());
+            if hwnd != 0 as _ {
+                let payload = format!("{}\n{}", summary, body);
+                let bytes = payload.as_bytes();
+                let cds = crate::platform::windows::indicator::COPYDATASTRUCT {
+                    dwData: 100,
+                    cbData: bytes.len() as u32,
+                    lpData: bytes.as_ptr() as *mut _,
+                };
+                windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    hwnd,
+                    windows_sys::Win32::UI::WindowsAndMessaging::WM_COPYDATA,
+                    0,
+                    &cds as *const _ as isize,
+                );
+            }
+        }
     }
 }
 

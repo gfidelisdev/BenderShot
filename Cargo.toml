@@ -31,7 +31,7 @@ ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
 ksni = "0.3.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-xcap = { version = "0.9", features = ["wgc"] }
+xcap = "0.9"
 windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
@@ -40,5 +40,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
+    "Win32_Storage_Xps",
     "Win32_Foundation"
 ] }

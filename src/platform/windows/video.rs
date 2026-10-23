@@ -1,6 +1,40 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 use anyhow::Result;
+
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse,
+    EndPaint, FillRect, FrameRgn, GetStockObject, InvalidateRect, SelectObject, SetBkMode,
+    SetTextColor, SetWindowRgn, UpdateWindow, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD,
+    FW_NORMAL, NULL_PEN, PAINTSTRUCT, TRANSPARENT,
+};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+    GetSystemMetrics, PeekMessageW, PostQuitMessage, RegisterClassW,
+    SetLayeredWindowAttributes, ShowWindow, TranslateMessage,
+    CS_HREDRAW, CS_VREDRAW, HTTRANSPARENT, LWA_ALPHA,
+    MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE, WM_DESTROY, WM_NCHITTEST,
+    WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
+};
+
+static CURRENT_COUNT: AtomicU32 = AtomicU32::new(3);
+static CANCELLED_COUNTDOWN: AtomicBool = AtomicBool::new(false);
+static SHORTCUT_LABEL: Mutex<String> = Mutex::new(String::new());
+
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+}
 
 pub fn pid_file_path() -> PathBuf {
     std::env::temp_dir().join("bendershot-record.pid")
@@ -19,15 +53,12 @@ pub fn stop_flag_file() -> PathBuf {
 }
 
 pub fn is_process_running(pid: u32) -> bool {
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    use windows_sys::Win32::Foundation::CloseHandle;
     const STILL_ACTIVE: u32 = 259;
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle == 0 as _ {
             return false;
         }
-        // A handle can exist for an already-exited process, so check the exit code.
         let mut code: u32 = 0;
         let ok = GetExitCodeProcess(handle, &mut code) != 0;
         CloseHandle(handle);
@@ -41,11 +72,10 @@ pub fn stop_worker_process(_pid: u32) {
 }
 
 pub fn send_notification(summary: &str, body: &str, _icon: &str) {
-    println!("[BenderShot] {} - {}", summary, body);
+    crate::platform::windows::shortcuts::ShortcutManager::send_notification(summary, body);
 }
 
 pub fn detect_screen_dimensions() -> (u32, u32) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
     unsafe {
         let w = GetSystemMetrics(SM_CXSCREEN) as u32;
         let h = GetSystemMetrics(SM_CYSCREEN) as u32;
@@ -56,14 +86,209 @@ pub fn detect_screen_dimensions() -> (u32, u32) {
     (1920, 1080)
 }
 
+unsafe extern "system" fn countdown_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_NCHITTEST => HTTRANSPARENT as LRESULT,
+            WM_PAINT => {
+                let mut ps: PAINTSTRUCT = std::mem::zeroed();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                if hdc != 0 as _ {
+                    let mut rc: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut rc);
+
+                    // 1. Dark pill background
+                    let bg_color = rgb(24, 25, 30);
+                    let bg_brush = CreateSolidBrush(bg_color);
+                    FillRect(hdc, &rc, bg_brush);
+                    DeleteObject(bg_brush as _);
+
+                    // 2. Subtle outer border
+                    let border_rgn = CreateRoundRectRgn(0, 0, rc.right, rc.bottom, 22, 22);
+                    let border_brush = CreateSolidBrush(rgb(65, 70, 85));
+                    FrameRgn(hdc, border_rgn, border_brush, 1, 1);
+                    DeleteObject(border_brush as _);
+                    DeleteObject(border_rgn as _);
+
+                    // 3. Red recording dot
+                    let dot_brush = CreateSolidBrush(rgb(235, 52, 52));
+                    let old_brush = SelectObject(hdc, dot_brush as _);
+                    let null_pen = GetStockObject(NULL_PEN);
+                    let old_pen = SelectObject(hdc, null_pen);
+                    Ellipse(hdc, 22, 20, 36, 34);
+                    SelectObject(hdc, old_pen);
+                    SelectObject(hdc, old_brush);
+                    DeleteObject(dot_brush as _);
+
+                    // 4. Texts
+                    SetBkMode(hdc, TRANSPARENT as _);
+
+                    let count = CURRENT_COUNT.load(Ordering::SeqCst);
+                    let title_text = format!("Gravação começa em {}…", count);
+                    let title_w = to_wide(&title_text);
+
+                    let font_title = CreateFontW(
+                        -18, 0, 0, 0,
+                        FW_BOLD as _,
+                        0, 0, 0, 1, 0, 0, 5, 0,
+                        to_wide("Segoe UI").as_ptr(),
+                    );
+                    let old_font = SelectObject(hdc, font_title as _);
+                    SetTextColor(hdc, rgb(255, 255, 255));
+                    let mut title_rc = RECT {
+                        left: 46,
+                        top: 13,
+                        right: rc.right - 12,
+                        bottom: 37,
+                    };
+                    DrawTextW(hdc, title_w.as_ptr(), -1, &mut title_rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+                    let font_sub = CreateFontW(
+                        -13, 0, 0, 0,
+                        FW_NORMAL as _,
+                        0, 0, 0, 1, 0, 0, 5, 0,
+                        to_wide("Segoe UI").as_ptr(),
+                    );
+                    SelectObject(hdc, font_sub as _);
+                    SetTextColor(hdc, rgb(165, 170, 185));
+                    let sc = SHORTCUT_LABEL.lock().unwrap();
+                    let sub_text = format!("Pressione {} novamente para finalizar", *sc);
+                    let sub_w = to_wide(&sub_text);
+                    let mut sub_rc = RECT {
+                        left: 46,
+                        top: 39,
+                        right: rc.right - 12,
+                        bottom: 59,
+                    };
+                    DrawTextW(hdc, sub_w.as_ptr(), -1, &mut sub_rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+                    SelectObject(hdc, old_font);
+                    DeleteObject(font_title as _);
+                    DeleteObject(font_sub as _);
+
+                    EndPaint(hwnd, &ps);
+                }
+                0
+            }
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+fn run_countdown_hud(shortcut: &str, flag: &Path) -> Result<bool> {
+    *SHORTCUT_LABEL.lock().unwrap() = shortcut.to_string();
+    CANCELLED_COUNTDOWN.store(false, Ordering::SeqCst);
+
+    unsafe {
+        let class_name = to_wide("BenderShotCountdownHUD");
+        let wnd_class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(countdown_wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: 0 as _,
+            hIcon: 0 as _,
+            hCursor: 0 as _,
+            hbrBackground: 0 as _,
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: class_name.as_ptr(),
+        };
+        RegisterClassW(&wnd_class);
+
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let banner_w = 460;
+        let banner_h = 70;
+        let x = (screen_w - banner_w) / 2;
+        let y = 48;
+
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+            class_name.as_ptr(),
+            to_wide("BenderShot Recording Countdown").as_ptr(),
+            WS_POPUP,
+            x,
+            y,
+            banner_w,
+            banner_h,
+            0 as _,
+            0 as _,
+            0 as _,
+            std::ptr::null(),
+        );
+
+        if hwnd == 0 as _ {
+            return Ok(true);
+        }
+
+        let rgn = CreateRoundRectRgn(0, 0, banner_w, banner_h, 22, 22);
+        SetWindowRgn(hwnd, rgn, 1);
+        SetLayeredWindowAttributes(hwnd, 0, 245, LWA_ALPHA);
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        UpdateWindow(hwnd);
+
+        for n in (1..=3).rev() {
+            CURRENT_COUNT.store(n, Ordering::SeqCst);
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+
+            send_notification(
+                &format!("🔴 Gravação começa em {}…", n),
+                &format!("Pressione {} novamente para finalizar.", shortcut),
+                "media-record",
+            );
+
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(1000) {
+                if flag.exists() || CANCELLED_COUNTDOWN.load(Ordering::SeqCst) {
+                    DestroyWindow(hwnd);
+                    return Ok(false);
+                }
+                let mut msg: MSG = std::mem::zeroed();
+                while PeekMessageW(&mut msg, 0 as _, 0, 0, PM_REMOVE) != 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        DestroyWindow(hwnd);
+        let mut msg: MSG = std::mem::zeroed();
+        while PeekMessageW(&mut msg, 0 as _, 0, 0, PM_REMOVE) != 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    // Brief delay to allow desktop compositor to refresh before capturing first frame
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    Ok(true)
+}
+
 pub async fn run_recorder_worker() -> Result<()> {
     let out_video = temp_video_path();
     let flag = stop_flag_file();
     let _ = std::fs::remove_file(&flag);
 
-    for n in (1..=3).rev() {
-        println!("🔴 Gravação começa em {}s...", n);
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let shortcut = crate::platform::windows::shortcuts::ShortcutManager::get_current_record_binding();
+    let shortcut_clone = shortcut.clone();
+    let flag_clone = flag.clone();
+
+    let proceed = tokio::task::spawn_blocking(move || {
+        run_countdown_hud(&shortcut_clone, &flag_clone)
+    }).await??;
+
+    if !proceed || flag.exists() {
+        let _ = std::fs::remove_file(&flag);
+        return Ok(());
     }
 
     println!("Iniciando gravação de tela no Windows...");

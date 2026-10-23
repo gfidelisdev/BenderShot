@@ -41,6 +41,7 @@ fn report_fatal_error(msg: &str) {
 async fn real_main() -> Result<()> {
     #[cfg(target_os = "windows")]
     unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
         windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS);
     }
 
@@ -146,12 +147,15 @@ async fn real_main() -> Result<()> {
                         .arg(&tmp)
                         .creation_flags(0x08000000)
                         .spawn()?;
+                    std::process::exit(0);
                 }
                 #[cfg(not(target_os = "windows"))]
                 open_editor_session(cropped, capture::CaptureMode::Fullscreen)?;
             } else {
                 #[cfg(target_os = "linux")]
                 bendershot::platform::linux::capture::remove_capture_pid_file();
+                #[cfg(target_os = "windows")]
+                std::process::exit(0);
             }
         }
         Commands::Full => {

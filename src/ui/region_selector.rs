@@ -39,11 +39,12 @@ pub struct RegionSelectorApp {
     drag_mode: DragMode,
     result: Arc<Mutex<Option<RegionSelection>>>,
     closing: bool,
+    focused_once: bool,
 }
 
 impl RegionSelectorApp {
     pub fn new(result: Arc<Mutex<Option<RegionSelection>>>) -> Self {
-        Self { selection: None, drag_mode: DragMode::None, result, closing: false }
+        Self { selection: None, drag_mode: DragMode::None, result, closing: false, focused_once: false }
     }
 
     fn confirm(&mut self, ctx: &egui::Context, screen: Rect) {
@@ -60,9 +61,13 @@ impl RegionSelectorApp {
 
     fn close(&mut self, ctx: &egui::Context) {
         self.closing = true;
-        // Hide immediately so the overlay is gone before the desktop capture happens.
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        // Do NOT send ViewportCommand::Visible(false) before Close: on Windows (Win32),
+        // hiding the window suppresses WM_PAINT (RedrawRequested), preventing eframe/winit
+        // from completing the close cycle and leaving the process stuck at 100% CPU.
+        // Returning early in `update()` while `self.closing` is true already clears the
+        // transparent framebuffer to [0, 0, 0, 0] immediately.
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint();
     }
 
     fn handles(sel: Rect) -> [(HandleType, Pos2, CursorIcon); 8] {
@@ -103,6 +108,10 @@ impl eframe::App for RegionSelectorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.closing {
             return;
+        }
+        if !self.focused_once {
+            self.focused_once = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             *self.result.lock().unwrap() = None;
@@ -285,8 +294,6 @@ impl eframe::App for RegionSelectorApp {
                 );
             }
         }
-
-        ctx.request_repaint();
     }
 }
 

@@ -10,16 +10,26 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey,
 };
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     FindWindowW, GetCursorPos, GetMessageW, LoadIconW, LoadImageW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetForegroundWindow, ShowWindow, TrackPopupMenu, TranslateMessage, HICON,
-    IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, SW_HIDE,
-    TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_ENDSESSION,
-    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION, WM_RBUTTONUP, WNDCLASSW,
+    RegisterClassW, SetForegroundWindow, ShowWindow, TrackPopupMenu, TranslateMessage,
+    HICON, IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, SW_HIDE,
+    TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WM_APP, WM_CLOSE, WM_COMMAND, WM_COPYDATA, WM_DESTROY,
+    WM_ENDSESSION, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION, WM_RBUTTONUP, WNDCLASSW,
 };
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(non_snake_case)]
+pub struct COPYDATASTRUCT {
+    pub dwData: usize,
+    pub cbData: u32,
+    pub lpData: *mut std::ffi::c_void,
+}
 
 pub const WM_TRAYICON: u32 = WM_APP + 100;
 pub const WM_RELOAD_SHORTCUTS: u32 = WM_APP + 101;
@@ -94,6 +104,27 @@ fn spawn_update() {
             .args(["update", "--gui"])
             .creation_flags(CREATE_NO_WINDOW)
             .spawn();
+    }
+}
+
+pub fn show_tray_notification(hwnd: HWND, title: &str, body: &str) {
+    unsafe {
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = 1; // NIIF_INFO
+
+        let title_w = to_wide(title);
+        let body_w = to_wide(body);
+        let title_len = title_w.len().min(nid.szInfoTitle.len() - 1);
+        let body_len = body_w.len().min(nid.szInfo.len() - 1);
+
+        nid.szInfoTitle[..title_len].copy_from_slice(&title_w[..title_len]);
+        nid.szInfo[..body_len].copy_from_slice(&body_w[..body_len]);
+
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 }
 
@@ -287,6 +318,23 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             WM_RELOAD_SHORTCUTS => {
                 register_all_hotkeys(hwnd);
                 0
+            }
+            WM_COPYDATA => {
+                let pcds = lparam as *const COPYDATASTRUCT;
+                if !pcds.is_null() {
+                    let cds = *pcds;
+                    if cds.dwData == 100 && !cds.lpData.is_null() && cds.cbData > 0 {
+                        let slice = std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize);
+                        if let Ok(text) = std::str::from_utf8(slice) {
+                            if let Some((title, body)) = text.split_once('\n') {
+                                show_tray_notification(hwnd, title, body);
+                            } else {
+                                show_tray_notification(hwnd, text, "");
+                            }
+                        }
+                    }
+                }
+                1
             }
             WM_QUERYENDSESSION => {
                 1

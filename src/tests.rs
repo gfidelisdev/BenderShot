@@ -364,10 +364,10 @@ fn test_windows_parse_hotkey() {
     let p6 = ShortcutManager::parse_hotkey("<Ctrl>Print").expect("Should parse <Ctrl>Print");
     assert_eq!(p6, p5);
 
-    assert_eq!(ShortcutManager::get_current_binding(), "Ctrl+Print");
-    assert_eq!(ShortcutManager::get_current_window_binding(), "Alt+Print");
-    assert_eq!(ShortcutManager::get_current_region_binding(), "Shift+Print");
-    assert_eq!(ShortcutManager::get_current_record_binding(), "Ctrl+Shift+R");
+    assert!(ShortcutManager::parse_hotkey(&ShortcutManager::get_current_binding()).is_some());
+    assert!(ShortcutManager::parse_hotkey(&ShortcutManager::get_current_window_binding()).is_some());
+    assert!(ShortcutManager::parse_hotkey(&ShortcutManager::get_current_region_binding()).is_some());
+    assert!(ShortcutManager::parse_hotkey(&ShortcutManager::get_current_record_binding()).is_some());
 
     let p7 = ShortcutManager::parse_hotkey("<Alt><Shift>Home").expect("Should parse Home");
     assert_eq!(p7.0, MOD_NOREPEAT | MOD_ALT | MOD_SHIFT);

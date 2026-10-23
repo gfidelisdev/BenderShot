@@ -996,6 +996,7 @@ impl eframe::App for EditorApp {
 
         // Initialize or update texture
         if self.texture.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             let (w, h) = self.base_image.dimensions();
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
                 [w as usize, h as usize],
