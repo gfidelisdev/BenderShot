@@ -1,5 +1,5 @@
 #define MyAppName "BenderShot"
-#define MyAppVersion "0.4.0"
+#define MyAppVersion "0.4.3"
 #define MyAppPublisher "BenderShot Team"
 #define MyAppURL "https://github.com/gfidelis/BenderShot"
 #define MyAppExeName "bendershot.exe"
@@ -22,7 +22,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
+CloseApplications=force
 RestartApplications=no
 SetupIconFile=..\assets\bendershot.ico
 UninstallIconFile=..\assets\bendershot.ico
@@ -70,7 +70,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{tmp}\install-ffmpeg.ps1"" -AppDir ""{app}"""; StatusMsg: "{cm:FFmpegStatusMsg}"; Tasks: installffmpeg; Flags: runhidden
 
 ; Inicia o daemon em segundo plano imediatamente após concluir a instalação
-Filename: "{app}\{#MyAppExeName}"; Parameters: "daemon"; Description: "Iniciar o serviço BenderShot em segundo plano agora"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "daemon"; Description: "Iniciar o serviço BenderShot em segundo plano agora"; Flags: nowait postinstall
 
 [UninstallRun]
 ; Finaliza o processo do daemon antes de desinstalar
@@ -79,6 +79,15 @@ Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden
 [Code]
 var
   FFmpegAlreadyInstalled: Boolean;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  // Encerra qualquer instância ativa do BenderShot (daemon, editor, updater) para liberar o executável
+  Exec('taskkill.exe', '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
 
 function NeedsFFmpeg(): Boolean;
 var

@@ -438,14 +438,50 @@ where
         }
 
         InstallMethod::WindowsInstaller => {
-            progress_callback("Iniciando instalador do Windows...");
-            let status = Command::new(&downloaded_file)
-                .args(["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
-                .status()
-                .map_err(|e| format!("Falha ao executar instalador do Windows: {e}"))?;
+            progress_callback("Fechando o BenderShot para aplicar a atualização...");
+            crate::config::AppConfig::set_installed_version(&release.tag_name);
 
-            if !status.success() {
-                return Err("Execução do instalador do Windows falhou".into());
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                const DETACHED_PROCESS: u32 = 0x00000008;
+
+                let current_exe = std::env::current_exe()
+                    .unwrap_or_else(|_| PathBuf::from("bendershot.exe"));
+                let installer_str = downloaded_file.to_string_lossy();
+                let exe_str = current_exe.to_string_lossy();
+
+                // Spawn a detached script that:
+                // 1. Waits briefly for this process to exit
+                // 2. Force-closes any remaining bendershot.exe instances (tray daemon, editors)
+                // 3. Runs the Inno Setup installer silently
+                // 4. Relaunches the updated tray daemon
+                let batch_cmd = format!(
+                    "ping 127.0.0.1 -n 2 >nul 2>&1 & taskkill /F /IM bendershot.exe >nul 2>&1 & \"{}\" /SILENT /CLOSEAPPLICATIONS /FORCECLOSEAPPLICATIONS & start \"\" \"{}\" daemon",
+                    installer_str, exe_str
+                );
+
+                Command::new("cmd.exe")
+                    .args(["/C", &batch_cmd])
+                    .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+                    .spawn()
+                    .map_err(|e| format!("Falha ao iniciar instalador do Windows: {e}"))?;
+
+                // Exit immediately so the running binary is unlocked for the installer
+                std::process::exit(0);
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                let status = Command::new(&downloaded_file)
+                    .args(["/SILENT", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS"])
+                    .status()
+                    .map_err(|e| format!("Falha ao executar instalador do Windows: {e}"))?;
+
+                if !status.success() {
+                    return Err("Execução do instalador do Windows falhou".into());
+                }
             }
         }
     }

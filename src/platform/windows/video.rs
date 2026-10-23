@@ -19,16 +19,19 @@ pub fn stop_flag_file() -> PathBuf {
 }
 
 pub fn is_process_running(pid: u32) -> bool {
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::Foundation::CloseHandle;
+    const STILL_ACTIVE: u32 = 259;
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle == 0 as _ {
-            false
-        } else {
-            CloseHandle(handle);
-            true
+            return false;
         }
+        // A handle can exist for an already-exited process, so check the exit code.
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        ok && code == STILL_ACTIVE
     }
 }
 
@@ -67,7 +70,9 @@ pub async fn run_recorder_worker() -> Result<()> {
     let _ = std::fs::write(video_path_file(), out_video.to_string_lossy().as_bytes());
 
     // Spawn ffmpeg with gdigrab desktop device
+    use std::os::windows::process::CommandExt;
     let ffmpeg = Command::new(crate::video::ScreenRecorder::ffmpeg_bin())
+        .creation_flags(0x08000000)
         .args([
             "-y",
             "-f", "gdigrab",
@@ -83,7 +88,17 @@ pub async fn run_recorder_worker() -> Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn();
 
+    let mut ffmpeg = ffmpeg;
     while !flag.exists() {
+        // Bail out if ffmpeg failed to start or died, instead of hanging forever.
+        match ffmpeg.as_mut() {
+            Ok(child) => {
+                if let Ok(Some(_)) = child.try_wait() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 

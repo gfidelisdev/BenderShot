@@ -8,6 +8,37 @@ use std::sync::mpsc::channel;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let res = real_main().await;
+    if let Err(e) = &res {
+        report_fatal_error(&format!("{e:#}"));
+    }
+    res
+}
+
+/// With `windows_subsystem = "windows"` there is no console, so failures would be invisible.
+/// Persist them to a log file and show a message box on Windows.
+fn report_fatal_error(msg: &str) {
+    eprintln!("Erro: {msg}");
+    #[cfg(target_os = "windows")]
+    {
+        let log = std::env::temp_dir().join("bendershot-error.log");
+        let _ = std::fs::write(&log, msg);
+        let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+        let text = wide(&format!("{msg}\n\nLog: {}", log.display()));
+        let title = wide("BenderShot");
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                0 as _,
+                text.as_ptr(),
+                title.as_ptr(),
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+            );
+        }
+    }
+}
+
+async fn real_main() -> Result<()> {
     #[cfg(target_os = "windows")]
     unsafe {
         windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS);
@@ -103,6 +134,20 @@ async fn main() -> Result<()> {
                 // Allow the compositor to unmap the transparent overlay before capturing
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
                 let cropped = capture::CaptureBackend::capture_region(selection).await?;
+                #[cfg(target_os = "windows")]
+                {
+                    // winit cannot reliably reuse an event loop after the transparent overlay
+                    // closed, so the editor is opened in a fresh process.
+                    let tmp = std::env::temp_dir().join(format!("bendershot-region-{}.png", std::process::id()));
+                    cropped.save(&tmp)?;
+                    use std::os::windows::process::CommandExt;
+                    std::process::Command::new(std::env::current_exe()?)
+                        .arg("edit")
+                        .arg(&tmp)
+                        .creation_flags(0x08000000)
+                        .spawn()?;
+                }
+                #[cfg(not(target_os = "windows"))]
                 open_editor_session(cropped, capture::CaptureMode::Fullscreen)?;
             } else {
                 #[cfg(target_os = "linux")]
@@ -202,7 +247,9 @@ fn open_editor_session(image: image::RgbaImage, mode: capture::CaptureMode) -> R
     let (pin_tx, pin_rx) = channel::<image::RgbaImage>();
 
     // Run the main editor window
-    let _ = ui::run_editor(image, Some(pin_tx), mode);
+    if let Err(e) = ui::run_editor(image, Some(pin_tx), mode) {
+        return Err(anyhow::anyhow!("Falha ao abrir o editor: {e:?}"));
+    }
 
     // If an image was sent to be pinned, open the floating pin window
     if let Ok(pinned_image) = pin_rx.try_recv() {

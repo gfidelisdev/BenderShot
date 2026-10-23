@@ -14,11 +14,11 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetCursorPos, GetMessageW, LoadIconW, LoadImageW, PostQuitMessage, RegisterClassW,
-    SetForegroundWindow, ShowWindow, TrackPopupMenu, TranslateMessage, HICON, IDI_APPLICATION,
-    IMAGE_ICON, LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, SW_HIDE, TPM_BOTTOMALIGN,
-    TPM_RIGHTALIGN, WM_APP, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
-    WNDCLASSW,
+    FindWindowW, GetCursorPos, GetMessageW, LoadIconW, LoadImageW, PostMessageW, PostQuitMessage,
+    RegisterClassW, SetForegroundWindow, ShowWindow, TrackPopupMenu, TranslateMessage, HICON,
+    IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, MF_SEPARATOR, MF_STRING, MSG, SW_HIDE,
+    TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_ENDSESSION,
+    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION, WM_RBUTTONUP, WNDCLASSW,
 };
 
 pub const WM_TRAYICON: u32 = WM_APP + 100;
@@ -288,7 +288,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 register_all_hotkeys(hwnd);
                 0
             }
-            WM_DESTROY => {
+            WM_QUERYENDSESSION => {
+                1
+            }
+            WM_CLOSE | WM_DESTROY | WM_ENDSESSION => {
                 PostQuitMessage(0);
                 0
             }
@@ -307,6 +310,14 @@ pub async fn run_indicator() -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || {
         unsafe {
             let class_name = to_wide("BenderShotTrayClass");
+
+            // Close any existing tray daemon instance before starting a new one
+            let existing_hwnd = FindWindowW(class_name.as_ptr(), null());
+            if existing_hwnd != 0 as _ {
+                PostMessageW(existing_hwnd, WM_CLOSE, 0, 0);
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+
             let wnd_class = WNDCLASSW {
                 style: 0,
                 lpfnWndProc: Some(wnd_proc),

@@ -39,6 +39,11 @@ impl ScreenRecorder {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
 
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
         let child = cmd.spawn().context("Falha ao iniciar processo de gravação")?;
         let pid = child.id();
 
@@ -64,8 +69,8 @@ impl ScreenRecorder {
             if let Ok(pid) = content.trim().parse::<u32>() {
                 crate::platform::imp::video::stop_worker_process(pid);
 
-                // Wait up to 3s for screencast finalization
-                for _ in 0..30 {
+                // Wait up to 15s for encoder finalization
+                for _ in 0..150 {
                     if !crate::platform::imp::video::is_process_running(pid) {
                         break;
                     }
