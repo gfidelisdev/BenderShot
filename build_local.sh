@@ -174,6 +174,11 @@ if [ "${DO_INSTALL}" = true ]; then
         gtk-update-icon-cache -f -t "${USER_ICONS}" &>/dev/null || true
     fi
 
+    # Copy systemd user service override pointing to user bin
+    mkdir -p "${HOME}/.config/systemd/user"
+    sed "s|/usr/bin/bendershot|${USER_BIN}/${BIN_NAME}|g" "${ROOT_DIR}/packaging/assets/bendershot.service" > "${HOME}/.config/systemd/user/bendershot.service"
+    systemctl --user daemon-reload || true
+
     # Auto setup permissions and restart service if active
     "${USER_BIN}/${BIN_NAME}" auto-setup || true
     if systemctl --user is-active bendershot.service &>/dev/null; then

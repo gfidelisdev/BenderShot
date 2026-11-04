@@ -8,7 +8,7 @@ use image::RgbaImage;
 use std::sync::mpsc::Sender;
 
 #[derive(Clone)]
-struct EditorStateSnapshot {
+pub(crate) struct EditorStateSnapshot {
     base_image: RgbaImage,
     items: Vec<AnnotationItem>,
     next_badge_number: u32,
@@ -60,12 +60,76 @@ pub enum ShortcutTarget {
     ScreenRecord,
 }
 
+pub struct EditorTab {
+    pub id: u64,
+    pub title: String,
+    pub timestamp_str: String,
+    pub mode: crate::capture::CaptureMode,
+    pub base_image: RgbaImage,
+    pub(crate) undo_stack: Vec<EditorStateSnapshot>,
+    pub(crate) redo_stack: Vec<EditorStateSnapshot>,
+    pub texture: Option<egui::TextureHandle>,
+    pub scene: Scene,
+    pub selected_item_index: Option<usize>,
+    pub crop_selection: Option<Rect>,
+    pub zoom_scale: f32,
+    pub pan_offset: Vec2,
+    pub auto_fit: bool,
+    pub video_source_path: Option<std::path::PathBuf>,
+    pub video_duration_ms: u64,
+    pub current_time_ms: u64,
+    pub is_playing: bool,
+    pub last_playback_tick: Option<std::time::Instant>,
+    pub frame_cache_dir: Option<std::path::PathBuf>,
+    pub last_cached_idx: u64,
+}
+
+impl EditorTab {
+    pub fn new(
+        id: u64,
+        base_image: RgbaImage,
+        mode: crate::capture::CaptureMode,
+        timestamp_str: String,
+        video_source_path: Option<std::path::PathBuf>,
+        video_duration_ms: u64,
+    ) -> Self {
+        let title = format!("📷 {}", timestamp_str);
+        Self {
+            id,
+            title,
+            timestamp_str,
+            mode,
+            base_image,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            texture: None,
+            scene: Scene::new(),
+            selected_item_index: None,
+            crop_selection: None,
+            zoom_scale: 1.0,
+            pan_offset: Vec2::ZERO,
+            auto_fit: true,
+            video_source_path,
+            video_duration_ms,
+            current_time_ms: 0,
+            is_playing: false,
+            last_playback_tick: None,
+            frame_cache_dir: None,
+            last_cached_idx: 0,
+        }
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        !self.scene.items.is_empty() || !self.undo_stack.is_empty()
+    }
+}
+
 pub struct EditorApp {
-    base_image: RgbaImage,
+    pub base_image: RgbaImage,
     undo_stack: Vec<EditorStateSnapshot>,
     redo_stack: Vec<EditorStateSnapshot>,
     texture: Option<egui::TextureHandle>,
-    scene: Scene,
+    pub scene: Scene,
     pub current_tool: ToolMode,
     current_color: [u8; 4],
     stroke_width: f32,
@@ -116,6 +180,12 @@ pub struct EditorApp {
     pub last_viewport_rect: Rect,
     available_update_tag: Option<String>,
     update_check_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
+    // Tabs state
+    pub tabs: Vec<EditorTab>,
+    pub active_tab_index: usize,
+    next_tab_id: u64,
+    ipc_rx: Option<std::sync::mpsc::Receiver<crate::ipc::NewCapturePayload>>,
+    _ipc_guard: Option<crate::ipc::IpcServerGuard>,
 }
 
 impl EditorApp {
@@ -123,6 +193,16 @@ impl EditorApp {
         base_image: RgbaImage,
         pin_sender: Option<Sender<RgbaImage>>,
         mode: crate::capture::CaptureMode,
+    ) -> Self {
+        Self::with_ipc(base_image, pin_sender, mode, None, None)
+    }
+
+    pub fn with_ipc(
+        base_image: RgbaImage,
+        pin_sender: Option<Sender<RgbaImage>>,
+        mode: crate::capture::CaptureMode,
+        ipc_rx: Option<std::sync::mpsc::Receiver<crate::ipc::NewCapturePayload>>,
+        ipc_guard: Option<crate::ipc::IpcServerGuard>,
     ) -> Self {
         let (current_tool, status_message) = match mode {
             crate::capture::CaptureMode::Region => (
@@ -147,6 +227,9 @@ impl EditorApp {
                 )),
             ),
         };
+
+        let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
+        let initial_tab = EditorTab::new(1, RgbaImage::new(0, 0), mode, now_str, None, 0);
 
         Self {
             base_image,
@@ -234,7 +317,126 @@ impl EditorApp {
                     None
                 }
             },
+            tabs: vec![initial_tab],
+            active_tab_index: 0,
+            next_tab_id: 2,
+            ipc_rx,
+            _ipc_guard: ipc_guard,
         }
+    }
+
+    pub fn save_active_tab_state(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            tab.base_image = std::mem::take(&mut self.base_image);
+            tab.undo_stack = std::mem::take(&mut self.undo_stack);
+            tab.redo_stack = std::mem::take(&mut self.redo_stack);
+            tab.texture = self.texture.take();
+            tab.scene = std::mem::take(&mut self.scene);
+            tab.selected_item_index = self.selected_item_index;
+            tab.crop_selection = self.crop_selection;
+            tab.zoom_scale = self.zoom_scale;
+            tab.pan_offset = self.pan_offset;
+            tab.auto_fit = self.auto_fit;
+            tab.video_source_path = self.video_source_path.take();
+            tab.video_duration_ms = self.video_duration_ms;
+            tab.current_time_ms = self.current_time_ms;
+            tab.is_playing = self.is_playing;
+            tab.last_playback_tick = self.last_playback_tick;
+            tab.frame_cache_dir = self.frame_cache_dir.take();
+            tab.last_cached_idx = self.last_cached_idx;
+        }
+    }
+
+    pub fn load_active_tab_state(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            self.base_image = std::mem::take(&mut tab.base_image);
+            self.undo_stack = std::mem::take(&mut tab.undo_stack);
+            self.redo_stack = std::mem::take(&mut tab.redo_stack);
+            self.texture = tab.texture.take();
+            self.scene = std::mem::take(&mut tab.scene);
+            self.selected_item_index = tab.selected_item_index;
+            self.crop_selection = tab.crop_selection;
+            self.zoom_scale = tab.zoom_scale;
+            self.pan_offset = tab.pan_offset;
+            self.auto_fit = tab.auto_fit;
+            self.video_source_path = tab.video_source_path.take();
+            self.video_duration_ms = tab.video_duration_ms;
+            self.current_time_ms = tab.current_time_ms;
+            self.is_playing = tab.is_playing;
+            self.last_playback_tick = tab.last_playback_tick;
+            self.frame_cache_dir = tab.frame_cache_dir.take();
+            self.last_cached_idx = tab.last_cached_idx;
+        }
+    }
+
+    pub fn switch_tab(&mut self, new_idx: usize) {
+        if new_idx >= self.tabs.len() || new_idx == self.active_tab_index {
+            return;
+        }
+        self.commit_inline_text();
+        self.drag_start = None;
+        self.drag_current = None;
+        self.freehand_points.clear();
+
+        self.save_active_tab_state();
+        self.active_tab_index = new_idx;
+        self.load_active_tab_state();
+    }
+
+    pub fn close_tab(&mut self, idx: usize, ctx: &egui::Context) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        self.commit_inline_text();
+        self.drag_start = None;
+        self.drag_current = None;
+        self.freehand_points.clear();
+
+        if idx == self.active_tab_index {
+            self.tabs.remove(idx);
+            if self.tabs.is_empty() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            self.active_tab_index = self.active_tab_index.min(self.tabs.len() - 1);
+            self.load_active_tab_state();
+        } else {
+            self.tabs.remove(idx);
+            if idx < self.active_tab_index {
+                self.active_tab_index -= 1;
+            }
+        }
+    }
+
+    pub fn add_new_tab(&mut self, image: RgbaImage, mode: crate::capture::CaptureMode, timestamp_str: String) {
+        let title = format!("📷 {}", timestamp_str);
+        self.add_new_tab_with_title(image, mode, timestamp_str, title);
+    }
+
+    pub fn add_new_tab_with_title(
+        &mut self,
+        image: RgbaImage,
+        mode: crate::capture::CaptureMode,
+        timestamp_str: String,
+        title: String,
+    ) {
+        self.commit_inline_text();
+        self.drag_start = None;
+        self.drag_current = None;
+        self.freehand_points.clear();
+
+        self.save_active_tab_state();
+
+        let tab_id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut new_tab = EditorTab::new(tab_id, image, mode, timestamp_str.clone(), None, 0);
+        new_tab.title = title;
+
+        self.tabs.push(new_tab);
+        self.active_tab_index = self.tabs.len() - 1;
+        self.load_active_tab_state();
+
+        self.set_status(format!("📸 Nova captura adicionada ({timestamp_str})"));
     }
 
     pub fn fit_to_viewport(&mut self, viewport_size: Vec2) {
@@ -649,14 +851,15 @@ impl EditorApp {
                 if !path_str.is_empty() {
                     let path = std::path::Path::new(&path_str);
                     if let Ok(loaded) = image::open(path) {
-                        self.save_snapshot_for_undo();
-                        self.base_image = loaded.to_rgba8();
-                        self.texture = None;
-                        self.scene.clear();
-                        self.crop_selection = None;
-                        self.selected_item_index = None;
-                        self.auto_fit = true;
-                        self.set_status(format!("Imagem carregada: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
+                        let title = if filename.len() > 14 {
+                            format!("{}...", &filename[..11])
+                        } else {
+                            filename.clone()
+                        };
+                        self.add_new_tab_with_title(loaded.to_rgba8(), crate::capture::CaptureMode::Fullscreen, now_str, format!("📂 {}", title));
+                        self.set_status(format!("Imagem carregada em nova aba: {}", filename));
                     } else {
                         self.set_status("Falha ao abrir imagem selecionada.");
                     }
@@ -994,6 +1197,34 @@ impl eframe::App for EditorApp {
         // Enforce Libadwaita theme styling
         apply_adwaita_theme(ctx, self.theme_mode);
 
+        // Drain incoming captures from IPC
+        let incoming: Vec<crate::ipc::NewCapturePayload> = if let Some(ref rx) = self.ipc_rx {
+            let mut msgs = Vec::new();
+            while let Ok(payload) = rx.try_recv() {
+                msgs.push(payload);
+            }
+            msgs
+        } else {
+            Vec::new()
+        };
+
+        for payload in incoming {
+            if let Ok(img) = crate::capture::CaptureBackend::load_image_from_path(&payload.file_path) {
+                if payload.delete_file_after_load {
+                    let _ = std::fs::remove_file(&payload.file_path);
+                }
+                self.add_new_tab(img, payload.mode, payload.timestamp_str);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
+            }
+        }
+
+        // Keep window title synchronized with active tab timestamp
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            let win_title = format!("BenderShot - {} (Aba {}/{})", tab.timestamp_str, self.active_tab_index + 1, self.tabs.len());
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(win_title));
+        }
+
         // Initialize or update texture
         if self.texture.is_none() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -1180,6 +1411,28 @@ impl eframe::App for EditorApp {
             }
 
             let is_ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+
+            // Tab navigation shortcuts
+            if is_ctrl && ctx.input(|i| i.key_pressed(egui::Key::W)) {
+                self.close_tab(self.active_tab_index, ctx);
+            }
+            if is_ctrl && (ctx.input(|i| i.key_pressed(egui::Key::PageDown)) || ctx.input(|i| !i.modifiers.shift && i.key_pressed(egui::Key::Tab))) {
+                if !self.tabs.is_empty() {
+                    let next = (self.active_tab_index + 1) % self.tabs.len();
+                    self.switch_tab(next);
+                }
+            }
+            if is_ctrl && (ctx.input(|i| i.key_pressed(egui::Key::PageUp)) || ctx.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::Tab))) {
+                if !self.tabs.is_empty() {
+                    let prev = if self.active_tab_index == 0 {
+                        self.tabs.len() - 1
+                    } else {
+                        self.active_tab_index - 1
+                    };
+                    self.switch_tab(prev);
+                }
+            }
+
             if is_ctrl && ctx.input(|i| i.key_pressed(egui::Key::Num0)) {
                 self.auto_fit = true;
                 self.set_status("Ajustado à janela");
@@ -1388,6 +1641,110 @@ impl eframe::App for EditorApp {
                     });
                 });
             });
+
+        // Adwaita Tab Bar (GNOME Libadwaita Style)
+        let tab_bar_bg = match self.theme_mode {
+            AdwaitaThemeMode::Dark => Color32::from_rgb(34, 34, 34),
+            AdwaitaThemeMode::Light => Color32::from_rgb(238, 238, 238),
+        };
+        let active_tab_bg = match self.theme_mode {
+            AdwaitaThemeMode::Dark => Color32::from_rgb(52, 52, 52),
+            AdwaitaThemeMode::Light => Color32::from_rgb(255, 255, 255),
+        };
+        let tab_border = match self.theme_mode {
+            AdwaitaThemeMode::Dark => Color32::from_rgb(68, 68, 68),
+            AdwaitaThemeMode::Light => Color32::from_rgb(210, 210, 210),
+        };
+
+        let mut tab_to_switch = None;
+        let mut tab_to_close = None;
+
+        egui::TopBottomPanel::top("adwaita_tab_bar")
+            .frame(Frame::none().fill(tab_bar_bg).inner_margin(Margin::symmetric(10.0, 3.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("adwaita_tabs_scroll")
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                            for (idx, tab) in self.tabs.iter().enumerate() {
+                                let is_active = idx == self.active_tab_index;
+                                let is_dirty = if is_active {
+                                    !self.scene.items.is_empty() || !self.undo_stack.is_empty()
+                                } else {
+                                    tab.is_dirty()
+                                };
+
+                                let fill = if is_active { active_tab_bg } else { Color32::TRANSPARENT };
+                                let stroke = if is_active {
+                                    Stroke::new(1.0_f32, tab_border)
+                                } else {
+                                    Stroke::NONE
+                                };
+
+                                Frame::none()
+                                    .fill(fill)
+                                    .stroke(stroke)
+                                    .rounding(Rounding::same(6.0))
+                                    .inner_margin(Margin::symmetric(8.0, 4.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let icon = if tab.video_source_path.is_some() { "🎬" } else { "📷" };
+                                            let dirty_marker = if is_dirty { " ●" } else { "" };
+                                            let label_text = format!("{} {}{}", icon, tab.timestamp_str, dirty_marker);
+
+                                            let text_color = if is_active {
+                                                match self.theme_mode {
+                                                    AdwaitaThemeMode::Dark => Color32::WHITE,
+                                                    AdwaitaThemeMode::Light => Color32::BLACK,
+                                                }
+                                            } else {
+                                                Color32::from_gray(160)
+                                            };
+
+                                            let tab_btn = ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(label_text)
+                                                        .color(text_color)
+                                                        .size(13.0)
+                                                        .strong(),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            );
+
+                                            if tab_btn.clicked() {
+                                                tab_to_switch = Some(idx);
+                                            }
+
+                                            // Close tab button
+                                            let close_btn = ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new("✕")
+                                                        .color(Color32::from_gray(140))
+                                                        .size(11.0),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            );
+                                            if close_btn.on_hover_text("Fechar aba (Ctrl+W)").clicked() {
+                                                tab_to_close = Some(idx);
+                                            }
+                                        });
+                                    });
+                            }
+
+                            // '+' Button to open image or capture
+                            if ui.button("+").on_hover_text("Abrir imagem em nova aba (ou pressione PrintScreen)").clicked() {
+                                self.open_image_dialog();
+                            }
+                        });
+                });
+            });
+
+        if let Some(idx) = tab_to_close {
+            self.close_tab(idx, ctx);
+        } else if let Some(idx) = tab_to_switch {
+            self.switch_tab(idx);
+        }
 
         // Dedicated Properties Sub-bar below Headerbar
         let prop_bg = match self.theme_mode {
@@ -3239,10 +3596,13 @@ pub fn run_editor(
         ..Default::default()
     };
 
+    let (ipc_tx, ipc_rx) = std::sync::mpsc::channel();
+    let ipc_guard = crate::ipc::start_editor_ipc_listener(ipc_tx);
+
     eframe::run_native(
         "bendershot",
         options,
-        Box::new(move |_cc| Ok(Box::new(EditorApp::new(image, pin_sender, mode)))),
+        Box::new(move |_cc| Ok(Box::new(EditorApp::with_ipc(image, pin_sender, mode, Some(ipc_rx), ipc_guard)))),
     )
 }
 
@@ -3268,14 +3628,22 @@ pub fn run_video_editor(video_path: std::path::PathBuf) -> Result<(), eframe::Er
         ..Default::default()
     };
 
+    let (ipc_tx, ipc_rx) = std::sync::mpsc::channel();
+    let ipc_guard = crate::ipc::start_editor_ipc_listener(ipc_tx);
+
     eframe::run_native(
         "bendershot",
         options,
         Box::new(move |_cc| {
-            let mut app = EditorApp::new(initial_frame, None, crate::capture::CaptureMode::Fullscreen);
-            app.video_source_path = Some(video_path);
+            let mut app = EditorApp::with_ipc(initial_frame, None, crate::capture::CaptureMode::Fullscreen, Some(ipc_rx), ipc_guard);
+            app.video_source_path = Some(video_path.clone());
             app.video_duration_ms = duration_ms;
             app.current_time_ms = 0;
+            if let Some(tab) = app.tabs.get_mut(0) {
+                tab.video_source_path = Some(video_path);
+                tab.video_duration_ms = duration_ms;
+                tab.title = format!("🎬 {}", tab.timestamp_str);
+            }
             // Pre-extract frames in background (ffmpeg runs once) so playback doesn't spawn ffmpeg per frame
             let dir = std::env::temp_dir().join(format!("bendershot-frames-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);

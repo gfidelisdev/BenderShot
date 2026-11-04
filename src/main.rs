@@ -127,6 +127,11 @@ async fn real_main() -> Result<()> {
             }
         }
         Commands::Edit { path } => {
+            let timestamp_str = chrono::Local::now().format("%H:%M:%S").to_string();
+            if bendershot::ipc::try_send_file_path(&path, capture::CaptureMode::Fullscreen, &timestamp_str).unwrap_or(false) {
+                println!("Imagem enviada para o editor ativo (aba adicionada: {}).", timestamp_str);
+                return Ok(());
+            }
             let image = capture::CaptureBackend::load_image_from_path(&path)?;
             open_editor_session(image, capture::CaptureMode::Fullscreen)?;
         }
@@ -135,6 +140,15 @@ async fn real_main() -> Result<()> {
                 // Allow the compositor to unmap the transparent overlay before capturing
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
                 let cropped = capture::CaptureBackend::capture_region(selection).await?;
+                #[cfg(target_os = "linux")]
+                bendershot::platform::linux::capture::remove_capture_pid_file();
+
+                let timestamp_str = chrono::Local::now().format("%H:%M:%S").to_string();
+                if bendershot::ipc::try_send_capture(&cropped, capture::CaptureMode::Region, &timestamp_str).unwrap_or(false) {
+                    println!("Screenshot de trecho enviado para o editor ativo (aba adicionada: {}).", timestamp_str);
+                    return Ok(());
+                }
+
                 #[cfg(target_os = "windows")]
                 {
                     // winit cannot reliably reuse an event loop after the transparent overlay
@@ -150,7 +164,7 @@ async fn real_main() -> Result<()> {
                     std::process::exit(0);
                 }
                 #[cfg(not(target_os = "windows"))]
-                open_editor_session(cropped, capture::CaptureMode::Fullscreen)?;
+                open_editor_session(cropped, capture::CaptureMode::Region)?;
             } else {
                 #[cfg(target_os = "linux")]
                 bendershot::platform::linux::capture::remove_capture_pid_file();
@@ -160,10 +174,26 @@ async fn real_main() -> Result<()> {
         }
         Commands::Full => {
             let image = capture::CaptureBackend::capture(capture::CaptureMode::Fullscreen).await?;
+            #[cfg(target_os = "linux")]
+            bendershot::platform::linux::capture::remove_capture_pid_file();
+
+            let timestamp_str = chrono::Local::now().format("%H:%M:%S").to_string();
+            if bendershot::ipc::try_send_capture(&image, capture::CaptureMode::Fullscreen, &timestamp_str).unwrap_or(false) {
+                println!("Screenshot de tela cheia enviado para o editor ativo (aba adicionada: {}).", timestamp_str);
+                return Ok(());
+            }
             open_editor_session(image, capture::CaptureMode::Fullscreen)?;
         }
         Commands::Window => {
             let image = capture::CaptureBackend::capture(capture::CaptureMode::Window).await?;
+            #[cfg(target_os = "linux")]
+            bendershot::platform::linux::capture::remove_capture_pid_file();
+
+            let timestamp_str = chrono::Local::now().format("%H:%M:%S").to_string();
+            if bendershot::ipc::try_send_capture(&image, capture::CaptureMode::Window, &timestamp_str).unwrap_or(false) {
+                println!("Screenshot de janela enviado para o editor ativo (aba adicionada: {}).", timestamp_str);
+                return Ok(());
+            }
             open_editor_session(image, capture::CaptureMode::Window)?;
         }
         Commands::Record => {

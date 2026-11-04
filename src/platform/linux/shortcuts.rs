@@ -686,12 +686,9 @@ pub fn get_executable_command() -> String {
             return appimage;
         }
     }
-    if std::path::Path::new("/usr/bin/bendershot").exists() {
-        return "/usr/bin/bendershot".to_string();
-    }
     if let Ok(exe) = std::env::current_exe() {
         let s = exe.to_string_lossy().to_string();
-        if !s.contains(".mount_") {
+        if !s.contains(".mount_") && !s.contains("target/debug") && !s.contains("target/release") {
             return s;
         }
     }
@@ -700,6 +697,9 @@ pub fn get_executable_command() -> String {
         if user_bin.exists() {
             return user_bin.to_string_lossy().to_string();
         }
+    }
+    if std::path::Path::new("/usr/bin/bendershot").exists() {
+        return "/usr/bin/bendershot".to_string();
     }
     "bendershot".to_string()
 }

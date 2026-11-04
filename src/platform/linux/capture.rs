@@ -39,7 +39,8 @@ pub fn ensure_portal_permissions() {
     }
 }
 
-/// Terminates any stale or hung capture/editor processes from previous invocations
+/// Terminates any stale or hung capture processes from previous invocations.
+/// Never terminates an active editor process!
 pub fn cleanup_stale_capture_processes() {
     let my_pid = std::process::id();
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
@@ -50,11 +51,13 @@ pub fn cleanup_stale_capture_processes() {
     if let Ok(content) = std::fs::read_to_string(&pid_file) {
         if let Ok(pid) = content.trim().parse::<u32>() {
             if pid != my_pid && is_process_alive(pid) {
-                tracing::info!("Terminating previous stale capture process PID {}", pid);
-                let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).output();
-                std::thread::sleep(Duration::from_millis(50));
-                if is_process_alive(pid) {
-                    let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).output();
+                if !crate::ipc::is_editor_active() {
+                    tracing::info!("Terminating previous stale capture process PID {}", pid);
+                    let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).output();
+                    std::thread::sleep(Duration::from_millis(50));
+                    if is_process_alive(pid) {
+                        let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).output();
+                    }
                 }
             }
         }

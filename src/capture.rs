@@ -2,7 +2,7 @@ use anyhow::Result;
 use image::RgbaImage;
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CaptureMode {
     Region,
     Fullscreen,

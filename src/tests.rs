@@ -884,3 +884,97 @@ fn test_toolbar_config_serde_and_positions() {
     }
 }
 
+#[test]
+fn test_editor_tabs_lifecycle() {
+    use crate::capture::CaptureMode;
+    use crate::model::AnnotationItem;
+    use crate::ui::editor::EditorApp;
+    use image::RgbaImage;
+
+    // Create 100x100 initial image
+    let img1 = RgbaImage::new(100, 100);
+    let mut app = EditorApp::new(img1, None, CaptureMode::Fullscreen);
+
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.active_tab_index, 0);
+
+    // Add a second tab with 200x200 image
+    let img2 = RgbaImage::new(200, 200);
+    app.add_new_tab(img2, CaptureMode::Region, "10:00:01".into());
+
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(app.active_tab_index, 1);
+    assert_eq!(app.base_image.dimensions(), (200, 200));
+
+    // Annotate tab 1
+    app.scene.push_item(AnnotationItem::Rectangle {
+        min: [10.0, 10.0],
+        max: [50.0, 50.0],
+        color: [255, 0, 0, 255],
+        width: 3.0,
+        fill: None,
+    });
+    assert_eq!(app.scene.items.len(), 1);
+
+    // Switch back to tab 0
+    app.switch_tab(0);
+    assert_eq!(app.active_tab_index, 0);
+    assert_eq!(app.base_image.dimensions(), (100, 100));
+    assert_eq!(app.scene.items.len(), 0); // Tab 0 scene is untouched
+
+    // Switch back to tab 1
+    app.switch_tab(1);
+    assert_eq!(app.active_tab_index, 1);
+    assert_eq!(app.base_image.dimensions(), (200, 200));
+    assert_eq!(app.scene.items.len(), 1); // Tab 1 annotation preserved!
+
+    // Add a third tab
+    let img3 = RgbaImage::new(300, 300);
+    app.add_new_tab(img3, CaptureMode::Window, "10:00:05".into());
+    assert_eq!(app.tabs.len(), 3);
+    assert_eq!(app.active_tab_index, 2);
+    assert_eq!(app.base_image.dimensions(), (300, 300));
+
+    // Close tab 1 (inactive tab)
+    // When closing index 1 while active is index 2, active index should become 1
+    let tab_to_remove = 1;
+    app.tabs.remove(tab_to_remove);
+    if tab_to_remove < app.active_tab_index {
+        app.active_tab_index -= 1;
+    }
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(app.active_tab_index, 1);
+    assert_eq!(app.base_image.dimensions(), (300, 300)); // still tab 3
+    assert_eq!(app.tabs[1].timestamp_str, "10:00:05");
+}
+
+#[test]
+fn test_editor_ipc_listener_and_send() {
+    use crate::capture::CaptureMode;
+    use crate::ipc::{is_editor_active, start_editor_ipc_listener, try_send_capture};
+    use image::RgbaImage;
+    use std::sync::mpsc::channel;
+
+    let (tx, rx) = channel();
+    let guard = start_editor_ipc_listener(tx);
+    assert!(guard.is_some(), "IPC listener should bind successfully");
+
+    // Wait a brief moment for background listener thread to accept connections
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(is_editor_active(), "Editor should report active via IPC ping");
+
+    let test_img = RgbaImage::new(64, 64);
+    let sent = try_send_capture(&test_img, CaptureMode::Region, "12:34:56").expect("send capture");
+    assert!(sent, "Screenshot should be successfully sent to active editor");
+
+    let received = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("receive payload");
+    assert_eq!(received.timestamp_str, "12:34:56");
+    assert_eq!(received.mode, CaptureMode::Region);
+    assert!(received.file_path.exists());
+    let _ = std::fs::remove_file(&received.file_path);
+
+    drop(guard);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!is_editor_active(), "Editor should report inactive after guard drop");
+}
+
