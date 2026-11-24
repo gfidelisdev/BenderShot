@@ -293,7 +293,9 @@ impl EditorApp {
             last_viewport_rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
             available_update_tag: {
                 let cfg = crate::config::AppConfig::load();
+                let current_ver = crate::config::AppConfig::get_effective_version();
                 cfg.latest_known_tag
+                    .filter(|tag| crate::updater::is_newer_version(&current_ver, tag))
             },
             update_check_rx: {
                 let cfg = crate::config::AppConfig::load();

@@ -93,14 +93,18 @@ impl AppConfig {
         let _ = cfg.save();
     }
 
-    pub fn get_effective_version() -> String {
-        let cfg = Self::load();
-        if let Some(installed) = cfg.installed_version_override {
-            if !installed.is_empty() {
-                return installed;
+    pub fn effective_version_from(&self, pkg_version: &str) -> String {
+        if let Some(ref installed) = self.installed_version_override {
+            let trimmed = installed.trim();
+            if !trimmed.is_empty() && crate::updater::is_newer_version(pkg_version, trimmed) {
+                return trimmed.to_string();
             }
         }
-        env!("CARGO_PKG_VERSION").to_string()
+        pkg_version.to_string()
+    }
+
+    pub fn get_effective_version() -> String {
+        Self::load().effective_version_from(env!("CARGO_PKG_VERSION"))
     }
 
     pub fn set_installed_version(tag: &str) {

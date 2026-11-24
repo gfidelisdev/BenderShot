@@ -680,6 +680,27 @@ fn test_app_config_update_fields_serde() {
 }
 
 #[test]
+fn test_effective_version_ignores_stale_or_equal_override() {
+    use crate::config::AppConfig;
+
+    let mut cfg = AppConfig::default();
+    assert_eq!(cfg.effective_version_from("0.5.0"), "0.5.0");
+
+    // Stale override from an older in-place update must not downgrade the running binary
+    cfg.installed_version_override = Some("v0.4.5".into());
+    assert_eq!(cfg.effective_version_from("0.5.0"), "0.5.0");
+
+    // Equal override (with or without 'v' prefix) must not trigger false update notifications
+    cfg.installed_version_override = Some("v0.5.0".into());
+    assert_eq!(cfg.effective_version_from("0.5.0"), "0.5.0");
+    assert!(!crate::updater::is_newer_version(&cfg.effective_version_from("0.5.0"), "v0.5.0"));
+
+    // Strictly newer override is respected
+    cfg.installed_version_override = Some("v0.5.1".into());
+    assert_eq!(cfg.effective_version_from("0.5.0"), "v0.5.1");
+}
+
+#[test]
 fn test_editor_app_capture_modes() {
     use crate::capture::CaptureMode;
     use crate::model::ToolMode;

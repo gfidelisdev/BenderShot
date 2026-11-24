@@ -151,3 +151,29 @@ bendershot auto-setup
 - [ADR 0010: Efeito Write-on Orgânico e Geometrias Avançadas](./docs/adr/0010-bendershot-organic-write-on-and-advanced-vector-tools.md)
 - [ADR 0011: Zoom Focal no Canvas, Pan e Pós-Seleção](./docs/adr/0011-canvas-zoom-pan-and-post-creation-selection.md)
 - [ADR 0012: Pré-Autorização no Portal XDG e Script de Build Local](./docs/adr/0012-portal-permission-pre-authorization-and-build-local-workflow.md)
+
+---
+
+## Local Interface & Invariants
+- `[build_local.sh]`: Local Linux build/install CLI (`-q/--quick`, `-d/--debug`, `-t/--test`, `-i/--install`, `-h/--help`). Enforces `set -euo pipefail`, requires `cargo`/`rustc` in `PATH`, verifies `target/{release,debug}/bendershot`, optionally invokes `packaging/package.sh`, and on `--install` copies binaries/icons/desktop/systemd units to `~/.local/` and `~/.config/systemd/user/`.
+- `[install.sh]`: Interactive Linux installer (`-u/--uninstall` or menu `CHOICE` `1..=5`). Enforces `set -euo pipefail`, installs to `/usr/local/*` (root) or `~/.local/*` (user), configures GNOME custom keybindings via `gsettings`, grants XDG portal permission via `busctl`, and enables `bendershot.service`.
+- `[new-release.sh]` / `[new-release.ps1]`: Cross-platform release automation scripts (`<version> [message]`, plus `-SkipBuild`/`-SkipPush` on Windows). Validate numeric semver tags, update `Cargo.toml`, `bendershot.spec`, and `bendershot.iss`, build/package, commit, tag, and push to `origin`.
+
+## Subdirectories & System Boundaries
+- [Core Crate (`src`)](./src/README.md) — CLI entrypoint, config, capture facade, vector scene model, rasterizer, IPC, updater, and video pipeline.
+- [Platform Backends (`src/platform`)](./src/platform/README.md) — Compile-time `linux` (Wayland/XDG Portal/ksni) and `windows` (Win32/xcap/GDI) implementations.
+- [User Interfaces (`src/ui`)](./src/ui/README.md) — `eframe`/`egui` image & video editor, region selector, pinned window, settings, wizard, updater UI, and Libadwaita theme.
+- [Packaging (`packaging`)](./packaging/README.md) — Linux `.deb`/`.rpm`/`.AppImage`/`.tar.gz` packaging (`package.sh`) and Windows Inno Setup installer (`packaging/windows`).
+
+## Global Invariants
+- `[src/platform/mod.rs:imp]`: `linux` and `windows` platform modules must expose identical submodule surfaces (`capture`, `indicator`, `shortcuts`, `video`) and compatible public entrypoints.
+- `[src/model.rs:Scene]` / `[src/rasterize.rs:rasterize_scene_at_time]`: Annotations remain non-destructive vector items with parallel-indexed `AnnotationSpan` entries; `Obfuscate` items always rasterize before vector overlays.
+- `[src/ipc.rs:start_editor_ipc_listener]`: At most one editor instance binds the local IPC endpoint (`$XDG_RUNTIME_DIR/bendershot-editor.sock` on Unix, `bendershot-editor.port` on Windows).
+
+## Global Side Effects
+- Persists user configuration in `config.json` via `directories::ProjectDirs("org", "bendershot", "bendershot")`.
+- Registers OS global shortcuts, autostart entries, and background daemon services (`bendershot.service` on Linux, `HKCU\...\Run` on Windows).
+- Spawns `ffmpeg`/`ffprobe` and platform capture helpers (`gnome_helper.py` on Linux, `xcap`/GDI on Windows) and writes temporary media/IPC files in the system temp or runtime directory.
+
+## System Verification
+- Run: `cargo test`
