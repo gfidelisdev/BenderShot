@@ -392,6 +392,86 @@ pub fn apply_color_erase(
     }
 }
 
+/// Rectifies a 4-point quadrilateral `[TL, TR, BR, BL]` from `src` into a
+/// rectangular image using an analytical planar homography and bilinear sampling.
+pub fn warp_perspective_quad(src: &RgbaImage, corners: [[f32; 2]; 4]) -> Option<RgbaImage> {
+    let (src_w, src_h) = src.dimensions();
+    if src_w == 0 || src_h == 0 {
+        return None;
+    }
+
+    let [p0, p1, p2, p3] = corners;
+    let dist = |a: [f32; 2], b: [f32; 2]| -> f32 {
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
+    };
+
+    let out_w = dist(p0, p1).max(dist(p3, p2)).round().clamp(1.0, 16384.0) as u32;
+    let out_h = dist(p0, p3).max(dist(p1, p2)).round().clamp(1.0, 16384.0) as u32;
+    if out_w < 8 || out_h < 8 {
+        return None;
+    }
+
+    let dx1 = p1[0] - p2[0];
+    let dx2 = p3[0] - p2[0];
+    let dx3 = p0[0] - p1[0] + p2[0] - p3[0];
+    let dy1 = p1[1] - p2[1];
+    let dy2 = p3[1] - p2[1];
+    let dy3 = p0[1] - p1[1] + p2[1] - p3[1];
+
+    let det = dx1 * dy2 - dx2 * dy1;
+    let (g, h) = if dx3.abs() < 1e-4 && dy3.abs() < 1e-4 || det.abs() < 1e-6 {
+        (0.0_f32, 0.0_f32)
+    } else {
+        ((dx3 * dy2 - dx2 * dy3) / det, (dx1 * dy3 - dx3 * dy1) / det)
+    };
+
+    let a = p1[0] - p0[0] + g * p1[0];
+    let b = p3[0] - p0[0] + h * p3[0];
+    let c = p0[0];
+    let d = p1[1] - p0[1] + g * p1[1];
+    let e = p3[1] - p0[1] + h * p3[1];
+    let f = p0[1];
+
+    let max_x = (src_w - 1) as f32;
+    let max_y = (src_h - 1) as f32;
+    let mut dst = RgbaImage::new(out_w, out_h);
+
+    for v in 0..out_h {
+        let t = if out_h > 1 { v as f32 / (out_h - 1) as f32 } else { 0.0 };
+        for u in 0..out_w {
+            let s = if out_w > 1 { u as f32 / (out_w - 1) as f32 } else { 0.0 };
+            let denom = g * s + h * t + 1.0;
+            if denom.abs() < 1e-6 {
+                continue;
+            }
+            let sx = ((a * s + b * t + c) / denom).clamp(0.0, max_x);
+            let sy = ((d * s + e * t + f) / denom).clamp(0.0, max_y);
+
+            let x0 = sx.floor() as u32;
+            let y0 = sy.floor() as u32;
+            let x1 = (x0 + 1).min(src_w - 1);
+            let y1 = (y0 + 1).min(src_h - 1);
+            let fx = sx - x0 as f32;
+            let fy = sy - y0 as f32;
+
+            let p00 = src.get_pixel(x0, y0).0;
+            let p10 = src.get_pixel(x1, y0).0;
+            let p01 = src.get_pixel(x0, y1).0;
+            let p11 = src.get_pixel(x1, y1).0;
+
+            let mut out_px = [0u8; 4];
+            for ch in 0..4 {
+                let top = p00[ch] as f32 * (1.0 - fx) + p10[ch] as f32 * fx;
+                let bot = p01[ch] as f32 * (1.0 - fx) + p11[ch] as f32 * fx;
+                out_px[ch] = (top * (1.0 - fy) + bot * fy).round().clamp(0.0, 255.0) as u8;
+            }
+            dst.put_pixel(u, v, Rgba(out_px));
+        }
+    }
+
+    Some(dst)
+}
+
 #[allow(dead_code)]
 fn draw_arrow(img: &mut RgbaImage, start: [f32; 2], end: [f32; 2], color: [u8; 4], width: f32) {
     draw_arrow_progress(img, start, end, color, width, 1.0);

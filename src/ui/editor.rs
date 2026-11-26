@@ -50,6 +50,7 @@ enum DragMode {
     ResizeBezier { item_index: usize, handle: BezierHandle },
     MovePolygonVertex { item_index: usize, vertex_index: usize },
     AdjustCrop { handle: CropHandle },
+    MovePerspectiveCorner { corner_index: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +73,7 @@ pub struct EditorTab {
     pub scene: Scene,
     pub selected_item_index: Option<usize>,
     pub crop_selection: Option<Rect>,
+    pub perspective_corners: Option<[[f32; 2]; 4]>,
     pub zoom_scale: f32,
     pub pan_offset: Vec2,
     pub auto_fit: bool,
@@ -106,6 +108,7 @@ impl EditorTab {
             scene: Scene::new(),
             selected_item_index: None,
             crop_selection: None,
+            perspective_corners: None,
             zoom_scale: 1.0,
             pan_offset: Vec2::ZERO,
             auto_fit: true,
@@ -137,6 +140,7 @@ pub struct EditorApp {
     drag_current: Option<Pos2>,
     drag_mode: DragMode,
     crop_selection: Option<Rect>,
+    perspective_corners: Option<[[f32; 2]; 4]>,
     active_inline_text: Option<InlineTextState>,
     show_loupe: bool,
     show_layers_panel: bool,
@@ -255,6 +259,7 @@ impl EditorApp {
             drag_current: None,
             drag_mode: DragMode::None,
             crop_selection: None,
+            perspective_corners: None,
             active_inline_text: None,
             show_loupe: true,
             show_layers_panel: false,
@@ -347,6 +352,7 @@ impl EditorApp {
             tab.scene = std::mem::take(&mut self.scene);
             tab.selected_item_index = self.selected_item_index;
             tab.crop_selection = self.crop_selection;
+            tab.perspective_corners = self.perspective_corners;
             tab.zoom_scale = self.zoom_scale;
             tab.pan_offset = self.pan_offset;
             tab.auto_fit = self.auto_fit;
@@ -369,6 +375,7 @@ impl EditorApp {
             self.scene = std::mem::take(&mut tab.scene);
             self.selected_item_index = tab.selected_item_index;
             self.crop_selection = tab.crop_selection;
+            self.perspective_corners = tab.perspective_corners;
             self.zoom_scale = tab.zoom_scale;
             self.pan_offset = tab.pan_offset;
             self.auto_fit = tab.auto_fit;
@@ -446,6 +453,7 @@ impl EditorApp {
             self.redo_stack.clear();
             self.selected_item_index = None;
             self.crop_selection = None;
+            self.perspective_corners = None;
             self.auto_fit = true;
             if let Some(tab) = self.tabs.get_mut(0) {
                 tab.title = title;
@@ -857,6 +865,16 @@ impl EditorApp {
             ));
         }
 
+        if let Some(ref mut corners) = self.perspective_corners {
+            for pt in corners.iter_mut() {
+                *pt = if clockwise {
+                    [old_h - pt[1], pt[0]]
+                } else {
+                    [pt[1], old_w - pt[0]]
+                };
+            }
+        }
+
         self.texture = None;
         self.auto_fit = true;
         self.set_status(if clockwise {
@@ -872,6 +890,103 @@ impl EditorApp {
 
     pub fn rotate_90_ccw(&mut self) {
         self.rotate_90(false);
+    }
+
+    fn flip_image(&mut self, horizontal: bool) {
+        if self.base_image.width() == 0 || self.base_image.height() == 0 {
+            return;
+        }
+        self.commit_inline_text();
+        self.save_snapshot_for_undo();
+
+        let (w, h) = (
+            self.base_image.width() as f32,
+            self.base_image.height() as f32,
+        );
+        if horizontal {
+            self.base_image = image::imageops::flip_horizontal(&self.base_image);
+            self.scene.flip_horizontal(w);
+        } else {
+            self.base_image = image::imageops::flip_vertical(&self.base_image);
+            self.scene.flip_vertical(h);
+        }
+
+        if let Some(rect) = self.crop_selection.take() {
+            let map = |x: f32, y: f32| -> [f32; 2] {
+                if horizontal { [w - x, y] } else { [x, h - y] }
+            };
+            let p1 = map(rect.min.x, rect.min.y);
+            let p2 = map(rect.max.x, rect.max.y);
+            self.crop_selection = Some(Rect::from_min_max(
+                Pos2::new(p1[0].min(p2[0]), p1[1].min(p2[1])),
+                Pos2::new(p1[0].max(p2[0]), p1[1].max(p2[1])),
+            ));
+        }
+
+        if let Some(ref mut corners) = self.perspective_corners {
+            for pt in corners.iter_mut() {
+                if horizontal {
+                    pt[0] = w - pt[0];
+                } else {
+                    pt[1] = h - pt[1];
+                }
+            }
+        }
+
+        self.texture = None;
+        self.set_status(if horizontal {
+            "Imagem espelhada horizontalmente"
+        } else {
+            "Imagem espelhada verticalmente"
+        });
+    }
+
+    pub fn flip_horizontal(&mut self) {
+        self.flip_image(true);
+    }
+
+    pub fn flip_vertical(&mut self) {
+        self.flip_image(false);
+    }
+
+    pub fn init_perspective_corners(&mut self) {
+        let w = self.base_image.width() as f32;
+        let h = self.base_image.height() as f32;
+        if w <= 16.0 || h <= 16.0 {
+            return;
+        }
+        let mx = (w * 0.12).clamp(8.0, w * 0.25);
+        let my = (h * 0.12).clamp(8.0, h * 0.25);
+        self.perspective_corners = Some([
+            [mx, my],
+            [w - mx, my],
+            [w - mx, h - my],
+            [mx, h - my],
+        ]);
+        self.set_status("Arraste os 4 cantos sobre o trapézio/documento e clique em ✔ Retificar");
+    }
+
+    pub fn apply_perspective_crop(&mut self) -> bool {
+        if let Some(corners) = self.perspective_corners.take() {
+            self.commit_inline_text();
+            let composed = self.export_current_raster();
+            if let Some(warped) = crate::rasterize::warp_perspective_quad(&composed, corners) {
+                self.save_snapshot_for_undo();
+                self.base_image = warped;
+                self.scene.clear();
+                self.texture = None;
+                self.selected_item_index = None;
+                self.crop_selection = None;
+                self.current_tool = ToolMode::Select;
+                self.auto_fit = true;
+                self.set_status("Perspectiva retificada para retângulo com sucesso");
+                return true;
+            } else {
+                self.perspective_corners = Some(corners);
+                self.set_status("Seleção muito pequena ou inválida para retificação");
+            }
+        }
+        false
     }
 
     fn commit_freeform_polygon(&mut self) {
@@ -1024,6 +1139,7 @@ impl EditorApp {
             (ToolMode::Smudge, "≋", "Smudge", "Esfregar e distorcer cores da imagem"),
             (ToolMode::ColorErase, "🧹", "Apagar Cor", "Apagar cor de fundo semelhante por tolerância"),
             (ToolMode::Crop, "⯏", "Trecho / Corte", "Selecionar trecho para recorte ou cópia"),
+            (ToolMode::PerspectiveCrop, "📐", "Retificar", "Selecionar 4 cantos (trapézio) e retificar em retângulo"),
         ];
 
         let next_badge = self.scene.next_badge_number;
@@ -1079,6 +1195,9 @@ impl EditorApp {
                 if resp.on_hover_text(tooltip).clicked() {
                     self_app.commit_inline_text();
                     self_app.current_tool = mode;
+                    if mode == ToolMode::PerspectiveCrop && self_app.perspective_corners.is_none() {
+                        self_app.init_perspective_corners();
+                    }
                 }
             }
         };
@@ -1293,6 +1412,33 @@ impl EditorApp {
                     }
                     if ui.small_button("✕").on_hover_text("Cancelar seleção de trecho").clicked() {
                         self.crop_selection = None;
+                    }
+                });
+            }
+
+            // Contextual Perspective Rectification Options
+            if self.current_tool == ToolMode::PerspectiveCrop || self.perspective_corners.is_some() {
+                ui.separator();
+                ui.group(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                    ui.label("📐 Retificar (4 cantos):");
+                    if self.perspective_corners.is_none() {
+                        if ui.button("Iniciar Cantos").clicked() {
+                            self.init_perspective_corners();
+                        }
+                    } else {
+                        if ui.button("✔ Retificar").on_hover_text("Corrigir perspectiva do trapézio para retângulo (Enter)").clicked() {
+                            self.apply_perspective_crop();
+                        }
+                        if ui.button("↺ Resetar").on_hover_text("Reposicionar os 4 cantos").clicked() {
+                            self.init_perspective_corners();
+                        }
+                        if ui.small_button("✕").on_hover_text("Cancelar retificação (Esc)").clicked() {
+                            self.perspective_corners = None;
+                            if self.current_tool == ToolMode::PerspectiveCrop {
+                                self.current_tool = ToolMode::Select;
+                            }
+                        }
                     }
                 });
             }
@@ -1527,11 +1673,22 @@ impl eframe::App for EditorApp {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 if self.active_inline_text.is_some() {
                     self.active_inline_text = None;
+                } else if self.perspective_corners.is_some() {
+                    self.perspective_corners = None;
+                    if self.current_tool == ToolMode::PerspectiveCrop {
+                        self.current_tool = ToolMode::Select;
+                    }
                 } else if self.selected_item_index.is_some() {
                     self.selected_item_index = None;
                 } else {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+            }
+            if self.active_inline_text.is_none()
+                && self.perspective_corners.is_some()
+                && ctx.input(|i| i.key_pressed(egui::Key::Enter))
+            {
+                self.apply_perspective_crop();
             }
 
             let is_ctrl = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
@@ -1619,12 +1776,18 @@ impl eframe::App for EditorApp {
 
                     ui.separator();
 
-                    // Rotate
+                    // Rotate & Flip
                     if ui.button("↺ 90°").on_hover_text("Girar 90° para a esquerda (Ctrl+Shift+R)").clicked() {
                         self.rotate_90_ccw();
                     }
                     if ui.button("↻ 90°").on_hover_text("Girar 90° para a direita (Ctrl+R)").clicked() {
                         self.rotate_90_cw();
+                    }
+                    if ui.button("⇄").on_hover_text("Espelhar horizontalmente").clicked() {
+                        self.flip_horizontal();
+                    }
+                    if ui.button("⇅").on_hover_text("Espelhar verticalmente").clicked() {
+                        self.flip_vertical();
                     }
 
                     ui.separator();
@@ -2804,6 +2967,67 @@ impl eframe::App for EditorApp {
                 painter.text(t_rect.center(), egui::Align2::CENTER_CENTER, "✔", egui::FontId::proportional(15.0), Color32::WHITE);
             }
 
+            // 2.6 Draw 4-Point Perspective Quad Overlay and Handles if active
+            let mut perspective_bar_rects: Option<(Rect, Rect, Rect)> = None;
+            if let Some(corners) = self.perspective_corners {
+                let s_pts: [Pos2; 4] = [
+                    to_screen(corners[0]),
+                    to_screen(corners[1]),
+                    to_screen(corners[2]),
+                    to_screen(corners[3]),
+                ];
+                let quad_stroke = Stroke::new(2.0_f32, Color32::from_rgb(46, 194, 126));
+                painter.add(egui::Shape::closed_line(s_pts.to_vec(), quad_stroke));
+                // Subtle internal perspective grid (thirds) for visual alignment
+                for frac in [1.0_f32 / 3.0, 2.0 / 3.0] {
+                    let top = s_pts[0].lerp(s_pts[1], frac);
+                    let bot = s_pts[3].lerp(s_pts[2], frac);
+                    let left = s_pts[0].lerp(s_pts[3], frac);
+                    let right = s_pts[1].lerp(s_pts[2], frac);
+                    let grid_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(46, 194, 126, 110));
+                    painter.line_segment([top, bot], grid_stroke);
+                    painter.line_segment([left, right], grid_stroke);
+                }
+
+                let handle_r = 7.5_f32;
+                let handle_fill = Color32::from_rgb(46, 194, 126);
+                let handle_stroke = Stroke::new(2.0_f32, Color32::WHITE);
+                for pt in s_pts {
+                    painter.circle_filled(pt, handle_r, handle_fill);
+                    painter.circle_stroke(pt, handle_r, handle_stroke);
+                }
+
+                let max_x_s = s_pts.iter().map(|p| p.x).fold(f32::MIN, f32::max);
+                let max_y_s = s_pts.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+                let bar_w = 84.0_f32;
+                let bar_h = 36.0_f32;
+                let bar_x = (max_x_s - bar_w).clamp(canvas_rect.min.x + 4.0, canvas_rect.max.x - bar_w - 4.0);
+                let mut bar_y = max_y_s + 8.0;
+                if bar_y + bar_h > canvas_rect.max.y {
+                    bar_y = max_y_s - bar_h - 8.0;
+                }
+                bar_y = bar_y.clamp(canvas_rect.min.y + 4.0, canvas_rect.max.y - bar_h - 4.0);
+                let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(bar_w, bar_h));
+                let c_rect = Rect::from_center_size(Pos2::new(bar_rect.min.x + 20.0, bar_rect.center().y), Vec2::new(28.0, 28.0));
+                let t_rect = Rect::from_center_size(Pos2::new(bar_rect.max.x - 20.0, bar_rect.center().y), Vec2::new(28.0, 28.0));
+
+                painter.rect_filled(bar_rect, Rounding::same(18.0), Color32::from_rgb(32, 32, 40));
+                painter.rect_stroke(bar_rect, Rounding::same(18.0), Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 72)));
+
+                let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                let cancel_hov = pointer_pos.map_or(false, |p| c_rect.contains(p));
+                let tick_hov = pointer_pos.map_or(false, |p| t_rect.contains(p));
+                if cancel_hov || tick_hov {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+
+                painter.circle_filled(c_rect.center(), 13.0, if cancel_hov { Color32::from_rgb(224, 27, 36) } else { Color32::from_rgb(50, 50, 60) });
+                painter.text(c_rect.center(), egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(14.0), Color32::WHITE);
+                painter.circle_filled(t_rect.center(), 13.0, if tick_hov { Color32::from_rgb(58, 215, 142) } else { Color32::from_rgb(46, 194, 126) });
+                painter.text(t_rect.center(), egui::Align2::CENTER_CENTER, "✔", egui::FontId::proportional(15.0), Color32::WHITE);
+                perspective_bar_rects = Some((bar_rect, c_rect, t_rect));
+            }
+
             // 3. Handle Single Click placement (StepBadge, Inline Text, or Selection)
             if response.clicked() && !is_pan_active {
                 if let Some(click_pos) = response.interact_pointer_pos() {
@@ -2836,6 +3060,19 @@ impl eframe::App for EditorApp {
                                 return;
                             } else if t_rect.contains(click_pos) {
                                 self.apply_crop();
+                                return;
+                            }
+                        }
+
+                        if let Some((_bar_rect, c_rect, t_rect)) = perspective_bar_rects {
+                            if c_rect.contains(click_pos) {
+                                self.perspective_corners = None;
+                                if self.current_tool == ToolMode::PerspectiveCrop {
+                                    self.current_tool = ToolMode::Select;
+                                }
+                                return;
+                            } else if t_rect.contains(click_pos) {
+                                self.apply_perspective_crop();
                                 return;
                             }
                         }
@@ -3019,6 +3256,19 @@ impl eframe::App for EditorApp {
                                     self.drag_mode = DragMode::AdjustCrop { handle: CropHandle::Inside };
                                 }
                             }
+                        } else if self.current_tool == ToolMode::PerspectiveCrop {
+                            let blocked_by_bar = perspective_bar_rects.map_or(false, |(bar_rect, _, _)| bar_rect.contains(pos));
+                            if !blocked_by_bar {
+                                if let Some(corners) = self.perspective_corners {
+                                    let grab_d = 16.0_f32;
+                                    for (idx, pt) in corners.iter().enumerate() {
+                                        if pos.distance(to_screen(*pt)) <= grab_d {
+                                            self.drag_mode = DragMode::MovePerspectiveCorner { corner_index: idx };
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         } else if self.current_tool == ToolMode::Select {
                             let mut handle_drag = None;
                             if let Some(sel_idx) = self.selected_item_index {
@@ -3139,6 +3389,16 @@ impl eframe::App for EditorApp {
                                     self.crop_selection = Some(crop);
                                 }
                             }
+                        } else if self.current_tool == ToolMode::PerspectiveCrop {
+                            if let DragMode::MovePerspectiveCorner { corner_index } = self.drag_mode {
+                                if let Some(ref mut corners) = self.perspective_corners {
+                                    let img_pos_x = ((pos.x - canvas_rect.min.x) / scale).clamp(0.0, img_w);
+                                    let img_pos_y = ((pos.y - canvas_rect.min.y) / scale).clamp(0.0, img_h);
+                                    if corner_index < 4 {
+                                        corners[corner_index] = [img_pos_x, img_pos_y];
+                                    }
+                                }
+                            }
                         } else if self.current_tool == ToolMode::Select {
                             match self.drag_mode {
                                 DragMode::ResizeArrow { item_index, handle } => {
@@ -3233,6 +3493,10 @@ impl eframe::App for EditorApp {
                         self.drag_current = None;
                         self.drag_mode = DragMode::None;
                     } else if self.current_tool == ToolMode::Crop && matches!(self.drag_mode, DragMode::AdjustCrop { .. }) {
+                        self.drag_start = None;
+                        self.drag_current = None;
+                        self.drag_mode = DragMode::None;
+                    } else if self.current_tool == ToolMode::PerspectiveCrop {
                         self.drag_start = None;
                         self.drag_current = None;
                         self.drag_mode = DragMode::None;

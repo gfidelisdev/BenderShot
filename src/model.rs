@@ -19,6 +19,7 @@ pub enum ToolMode {
     Smudge,
     ColorErase,
     Crop,
+    PerspectiveCrop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,6 +503,18 @@ impl Scene {
             item.rotate_90_ccw(old_w, old_h);
         }
     }
+
+    pub fn flip_horizontal(&mut self, width: f32) {
+        for item in &mut self.items {
+            item.flip_horizontal(width);
+        }
+    }
+
+    pub fn flip_vertical(&mut self, height: f32) {
+        for item in &mut self.items {
+            item.flip_vertical(height);
+        }
+    }
 }
 
 impl AnnotationItem {
@@ -555,5 +568,15 @@ impl AnnotationItem {
     /// Rotates coordinates 90 degrees counter-clockwise within an image of `(old_w, old_h)`.
     pub fn rotate_90_ccw(&mut self, old_w: f32, _old_h: f32) {
         self.transform_points(|[x, y]| [y, old_w - x]);
+    }
+
+    /// Flips coordinates horizontally within an image of `width`.
+    pub fn flip_horizontal(&mut self, width: f32) {
+        self.transform_points(|[x, y]| [width - x, y]);
+    }
+
+    /// Flips coordinates vertically within an image of `height`.
+    pub fn flip_vertical(&mut self, height: f32) {
+        self.transform_points(|[x, y]| [x, height - y]);
     }
 }

@@ -1104,3 +1104,75 @@ fn test_empty_editor_replaces_placeholder_tab_on_open() {
     assert_eq!(app.tabs[0].title, "📂 photo.png");
 }
 
+#[test]
+fn test_editor_flip_horizontal_and_vertical() {
+    use crate::capture::CaptureMode;
+    use crate::model::AnnotationItem;
+    use crate::ui::editor::EditorApp;
+    use image::{Rgba, RgbaImage};
+
+    let mut img = RgbaImage::new(20, 10);
+    img.put_pixel(2, 1, Rgba([255, 0, 0, 255]));
+
+    let mut app = EditorApp::new(img, None, CaptureMode::Fullscreen);
+    app.scene.push_item(AnnotationItem::Arrow {
+        start: [2.0, 1.0],
+        end: [14.0, 7.0],
+        color: [0, 255, 0, 255],
+        width: 2.0,
+    });
+
+    app.flip_horizontal();
+    // Pixel x=2 -> x = 20 - 1 - 2 = 17
+    assert_eq!(*app.base_image.get_pixel(17, 1), Rgba([255, 0, 0, 255]));
+    match &app.scene.items[0] {
+        AnnotationItem::Arrow { start, end, .. } => {
+            assert_eq!(*start, [18.0, 1.0]);
+            assert_eq!(*end, [6.0, 7.0]);
+        }
+        _ => panic!("expected arrow"),
+    }
+
+    app.flip_vertical();
+    // Pixel y=1 -> y = 10 - 1 - 1 = 8
+    assert_eq!(*app.base_image.get_pixel(17, 8), Rgba([255, 0, 0, 255]));
+    match &app.scene.items[0] {
+        AnnotationItem::Arrow { start, end, .. } => {
+            assert_eq!(*start, [18.0, 9.0]);
+            assert_eq!(*end, [6.0, 3.0]);
+        }
+        _ => panic!("expected arrow"),
+    }
+}
+
+#[test]
+fn test_warp_perspective_quad_trapezoid() {
+    use crate::rasterize::warp_perspective_quad;
+    use image::{Rgba, RgbaImage};
+
+    // Create 100x100 black image with a white trapezoid:
+    // TL=(30,10), TR=(70,10), BR=(90,90), BL=(10,90)
+    let mut src = RgbaImage::from_pixel(100, 100, Rgba([0, 0, 0, 255]));
+    for y in 10..=90 {
+        let t = (y - 10) as f32 / 80.0;
+        let x_left = (30.0 * (1.0 - t) + 10.0 * t).round() as u32;
+        let x_right = (70.0 * (1.0 - t) + 90.0 * t).round() as u32;
+        for x in x_left..=x_right {
+            src.put_pixel(x, y, Rgba([255, 255, 255, 255]));
+        }
+    }
+
+    let warped = warp_perspective_quad(&src, [[30.0, 10.0], [70.0, 10.0], [90.0, 90.0], [10.0, 90.0]])
+        .expect("should warp valid trapezoid");
+    let (w, h) = warped.dimensions();
+    assert_eq!(w, 80);
+    assert_eq!(h, 82);
+
+    // Center and interior corners of the rectified rectangle must be white
+    assert_eq!(*warped.get_pixel(w / 2, h / 2), Rgba([255, 255, 255, 255]));
+    assert!(warped.get_pixel(2, 2)[0] > 200);
+    assert!(warped.get_pixel(w - 3, 2)[0] > 200);
+    assert!(warped.get_pixel(2, h - 3)[0] > 200);
+    assert!(warped.get_pixel(w - 3, h - 3)[0] > 200);
+}
+
