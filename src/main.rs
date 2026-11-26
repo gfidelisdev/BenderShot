@@ -51,7 +51,9 @@ async fn real_main() -> Result<()> {
     let command = match args.command {
         Some(cmd) => cmd,
         None => {
-            if !bendershot::config::AppConfig::is_setup_completed() {
+            if let Some(path) = args.path {
+                Commands::Edit { path: Some(path) }
+            } else if !bendershot::config::AppConfig::is_setup_completed() {
                 Commands::Wizard
             } else {
                 Commands::Region
@@ -127,13 +129,17 @@ async fn real_main() -> Result<()> {
             }
         }
         Commands::Edit { path } => {
-            let timestamp_str = chrono::Local::now().format("%H:%M:%S").to_string();
-            if bendershot::ipc::try_send_file_path(&path, capture::CaptureMode::Fullscreen, &timestamp_str).unwrap_or(false) {
-                println!("Imagem enviada para o editor ativo (aba adicionada: {}).", timestamp_str);
-                return Ok(());
+            if let Some(path) = path {
+                let timestamp_str = chrono::Local::now().format("%H:%M:%S").to_string();
+                if bendershot::ipc::try_send_file_path(&path, capture::CaptureMode::Fullscreen, &timestamp_str).unwrap_or(false) {
+                    println!("Imagem enviada para o editor ativo (aba adicionada: {}).", timestamp_str);
+                    return Ok(());
+                }
+                let image = capture::CaptureBackend::load_image_from_path(&path)?;
+                open_editor_session(image, capture::CaptureMode::Fullscreen)?;
+            } else {
+                open_editor_session(image::RgbaImage::new(0, 0), capture::CaptureMode::Fullscreen)?;
             }
-            let image = capture::CaptureBackend::load_image_from_path(&path)?;
-            open_editor_session(image, capture::CaptureMode::Fullscreen)?;
         }
         Commands::Region => {
             if let Some(selection) = ui::run_region_selector().map_err(|e| anyhow::anyhow!("{e:?}"))? {

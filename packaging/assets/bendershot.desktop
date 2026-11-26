@@ -1,15 +1,16 @@
 [Desktop Entry]
 Name=BenderShot
 Comment=Captura, gravação e anotação profissional de tela para Linux Wayland
-Exec=bendershot
+Exec=bendershot %F
 Icon=bendershot
 Terminal=false
 Type=Application
 StartupNotify=true
 StartupWMClass=bendershot
 Categories=Utility;Graphics;Photography;
+MimeType=image/png;image/jpeg;image/webp;image/bmp;image/gif;
 Keywords=screenshot;captura;print;tela;anotação;gravação;video;screencast;
-Actions=Region;Full;Window;Record;Daemon;Settings;Wizard;
+Actions=Region;Full;Window;Edit;Record;Daemon;Settings;Wizard;
 
 [Desktop Action Region]
 Name=Capturar Região
@@ -22,6 +23,10 @@ Exec=bendershot full
 [Desktop Action Window]
 Name=Capturar Janela Ativa
 Exec=bendershot window
+
+[Desktop Action Edit]
+Name=Abrir Editor (Editar Imagem)
+Exec=bendershot edit
 
 [Desktop Action Record]
 Name=Gravar Vídeo da Tela

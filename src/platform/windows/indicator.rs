@@ -43,6 +43,7 @@ const ID_TRAY_RECORD: usize = 1004;
 const ID_TRAY_SETTINGS: usize = 1005;
 const ID_TRAY_UPDATE: usize = 1006;
 const ID_TRAY_EXIT: usize = 1007;
+const ID_TRAY_EDIT: usize = 1008;
 
 const HOTKEY_FULL_ID: i32 = 1;
 const HOTKEY_CAPTURE_FALLBACK_ID: i32 = 2;
@@ -103,6 +104,15 @@ fn spawn_record() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = Command::new(exe)
             .arg("record")
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+}
+
+fn spawn_edit() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe)
+            .arg("edit")
             .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }
@@ -283,6 +293,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_WINDOW, to_wide("🪟 Capturar Janela").as_ptr());
                         AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_RECORD, to_wide("🎬 Gravar Tela (Vídeo)").as_ptr());
+                        AppendMenuW(hmenu, MF_STRING, ID_TRAY_EDIT, to_wide("🖼️ Abrir Editor / Editar Imagem").as_ptr());
                         AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_SETTINGS, to_wide("⚙️ Configurações").as_ptr());
                         AppendMenuW(hmenu, MF_STRING, ID_TRAY_UPDATE, to_wide("🔄 Verificar Atualizações").as_ptr());
@@ -317,6 +328,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         spawn_window_capture(target);
                     }
                     ID_TRAY_RECORD => spawn_record(),
+                    ID_TRAY_EDIT => spawn_edit(),
                     ID_TRAY_SETTINGS => spawn_settings(),
                     ID_TRAY_UPDATE => spawn_update(),
                     ID_TRAY_EXIT => {

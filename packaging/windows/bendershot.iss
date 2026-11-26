@@ -1,5 +1,5 @@
 #define MyAppName "BenderShot"
-#define MyAppVersion "0.5.1"
+#define MyAppVersion "0.6.1"
 #define MyAppPublisher "BenderShot Team"
 #define MyAppURL "https://github.com/gfidelis/BenderShot"
 #define MyAppExeName "bendershot.exe"
@@ -42,10 +42,13 @@ brazilianportuguese.StartupTaskDesc=Iniciar o BenderShot em segundo plano automa
 english.StartupTaskDesc=Start BenderShot in background automatically on Windows logon (Recommended)
 brazilianportuguese.StartupGroupDesc=Inicialização do Serviço:
 english.StartupGroupDesc=Service Startup:
+brazilianportuguese.ContextMenuTaskDesc=Adicionar "Editar com BenderShot" ao menu de contexto de imagens
+english.ContextMenuTaskDesc=Add "Edit with BenderShot" to image context menu
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "startupservice"; Description: "{cm:StartupTaskDesc}"; GroupDescription: "{cm:StartupGroupDesc}"
+Name: "contextmenu"; Description: "{cm:ContextMenuTaskDesc}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "installffmpeg"; Description: "{cm:FFmpegTaskDesc}"; GroupDescription: "{cm:FFmpegGroupDesc}"; Check: NeedsFFmpeg
 
 [Files]
@@ -64,6 +67,11 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Registry]
 ; Registra o daemon para iniciar no logon do usuário do Windows
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "BenderShot"; ValueData: """{app}\{#MyAppExeName}"" daemon"; Flags: uninsdeletevalue; Tasks: startupservice
+; Adiciona "Editar com BenderShot" ao menu de contexto de imagens e "Abrir com"
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\image\shell\BenderShot"; ValueType: string; ValueName: ""; ValueData: "Editar com BenderShot"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\image\shell\BenderShot"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\bendershot.ico"""; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\image\shell\BenderShot\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Flags: uninsdeletekey
 
 [Run]
 ; Baixa e configura o FFmpeg se a opção foi selecionada

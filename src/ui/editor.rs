@@ -204,28 +204,39 @@ impl EditorApp {
         ipc_rx: Option<std::sync::mpsc::Receiver<crate::ipc::NewCapturePayload>>,
         ipc_guard: Option<crate::ipc::IpcServerGuard>,
     ) -> Self {
-        let (current_tool, status_message) = match mode {
-            crate::capture::CaptureMode::Region => (
-                ToolMode::Crop,
+        let is_empty = base_image.width() == 0 || base_image.height() == 0;
+        let (current_tool, status_message) = if is_empty {
+            (
+                ToolMode::Select,
                 Some((
-                    "📸 Modo Trecho: clique e arraste para selecionar a parte da tela que deseja capturar".into(),
+                    "📂 Editor pronto. Abra ou arraste uma imagem para começar.".into(),
                     std::time::Instant::now(),
                 )),
-            ),
-            crate::capture::CaptureMode::Window => (
-                ToolMode::Arrow,
-                Some((
-                    "🪟 Janela ativa capturada".into(),
-                    std::time::Instant::now(),
-                )),
-            ),
-            crate::capture::CaptureMode::Fullscreen => (
-                ToolMode::Arrow,
-                Some((
-                    "🖥️ Tela cheia capturada".into(),
-                    std::time::Instant::now(),
-                )),
-            ),
+            )
+        } else {
+            match mode {
+                crate::capture::CaptureMode::Region => (
+                    ToolMode::Crop,
+                    Some((
+                        "📸 Modo Trecho: clique e arraste para selecionar a parte da tela que deseja capturar".into(),
+                        std::time::Instant::now(),
+                    )),
+                ),
+                crate::capture::CaptureMode::Window => (
+                    ToolMode::Arrow,
+                    Some((
+                        "🪟 Janela ativa capturada".into(),
+                        std::time::Instant::now(),
+                    )),
+                ),
+                crate::capture::CaptureMode::Fullscreen => (
+                    ToolMode::Arrow,
+                    Some((
+                        "🖥️ Tela cheia capturada".into(),
+                        std::time::Instant::now(),
+                    )),
+                ),
+            }
         };
 
         let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
@@ -426,6 +437,24 @@ impl EditorApp {
         self.drag_start = None;
         self.drag_current = None;
         self.freehand_points.clear();
+
+        if self.tabs.len() == 1 && self.base_image.width() == 0 && self.base_image.height() == 0 {
+            self.base_image = image;
+            self.texture = None;
+            self.scene.clear();
+            self.undo_stack.clear();
+            self.redo_stack.clear();
+            self.selected_item_index = None;
+            self.crop_selection = None;
+            self.auto_fit = true;
+            if let Some(tab) = self.tabs.get_mut(0) {
+                tab.title = title;
+                tab.timestamp_str = timestamp_str.clone();
+                tab.mode = mode;
+            }
+            self.set_status(format!("Imagem carregada ({timestamp_str})"));
+            return;
+        }
 
         self.save_active_tab_state();
 
@@ -793,6 +822,58 @@ impl EditorApp {
         false
     }
 
+    fn rotate_90(&mut self, clockwise: bool) {
+        if self.base_image.width() == 0 || self.base_image.height() == 0 {
+            return;
+        }
+        self.commit_inline_text();
+        self.save_snapshot_for_undo();
+
+        let (old_w, old_h) = (
+            self.base_image.width() as f32,
+            self.base_image.height() as f32,
+        );
+        if clockwise {
+            self.base_image = image::imageops::rotate90(&self.base_image);
+            self.scene.rotate_90_cw(old_w, old_h);
+        } else {
+            self.base_image = image::imageops::rotate270(&self.base_image);
+            self.scene.rotate_90_ccw(old_w, old_h);
+        }
+
+        if let Some(rect) = self.crop_selection.take() {
+            let map = |x: f32, y: f32| -> [f32; 2] {
+                if clockwise {
+                    [old_h - y, x]
+                } else {
+                    [y, old_w - x]
+                }
+            };
+            let p1 = map(rect.min.x, rect.min.y);
+            let p2 = map(rect.max.x, rect.max.y);
+            self.crop_selection = Some(Rect::from_min_max(
+                Pos2::new(p1[0].min(p2[0]), p1[1].min(p2[1])),
+                Pos2::new(p1[0].max(p2[0]), p1[1].max(p2[1])),
+            ));
+        }
+
+        self.texture = None;
+        self.auto_fit = true;
+        self.set_status(if clockwise {
+            "Imagem girada 90° para a direita"
+        } else {
+            "Imagem girada 90° para a esquerda"
+        });
+    }
+
+    pub fn rotate_90_cw(&mut self) {
+        self.rotate_90(true);
+    }
+
+    pub fn rotate_90_ccw(&mut self) {
+        self.rotate_90(false);
+    }
+
     fn commit_freeform_polygon(&mut self) {
         if self.polygon_freeform_points.len() >= 3 {
             self.save_snapshot_for_undo();
@@ -839,34 +920,75 @@ impl EditorApp {
         }
     }
 
-    fn open_image_dialog(&mut self) {
-        // Try invoking zenity for a native Wayland / GTK file chooser dialog
-        let output = std::process::Command::new("zenity")
-            .arg("--file-selection")
-            .arg("--title=Abrir Imagem para Edição")
-            .arg("--file-filter=Imagens (*.png *.jpg *.jpeg *.webp) | *.png *.jpg *.jpeg *.webp *.PNG *.JPG *.JPEG *.WEBP")
-            .output();
-
-        if let Ok(out) = output {
-            if out.status.success() {
-                let path_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !path_str.is_empty() {
-                    let path = std::path::Path::new(&path_str);
-                    if let Ok(loaded) = image::open(path) {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
-                        let title = if filename.len() > 14 {
-                            format!("{}...", &filename[..11])
-                        } else {
-                            filename.clone()
-                        };
-                        self.add_new_tab_with_title(loaded.to_rgba8(), crate::capture::CaptureMode::Fullscreen, now_str, format!("📂 {}", title));
-                        self.set_status(format!("Imagem carregada em nova aba: {}", filename));
-                    } else {
-                        self.set_status("Falha ao abrir imagem selecionada.");
-                    }
-                }
+    fn open_image_from_path(&mut self, path: &std::path::Path) {
+        match crate::capture::CaptureBackend::load_image_from_path(path) {
+            Ok(loaded) => {
+                let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
+                let title = if filename.chars().count() > 14 {
+                    let prefix: String = filename.chars().take(11).collect();
+                    format!("{prefix}...")
+                } else {
+                    filename.clone()
+                };
+                self.add_new_tab_with_title(
+                    loaded,
+                    crate::capture::CaptureMode::Fullscreen,
+                    now_str,
+                    format!("📂 {title}"),
+                );
+                self.set_status(format!("Imagem carregada: {filename}"));
             }
+            Err(_) => {
+                self.set_status("Falha ao abrir imagem selecionada.");
+            }
+        }
+    }
+
+    fn open_image_dialog(&mut self) {
+        let selected: Option<std::path::PathBuf> = {
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                let script = "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Title = 'Abrir Imagem para Edição'; $d.Filter = 'Imagens (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif|Todos (*.*)|*.*'; if ($d.ShowDialog() -eq 'OK') { Write-Output $d.FileName }";
+                std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-STA", "-Command", script])
+                    .creation_flags(0x08000000)
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(std::path::PathBuf::from)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let zenity = std::process::Command::new("zenity")
+                    .arg("--file-selection")
+                    .arg("--title=Abrir Imagem para Edição")
+                    .arg("--file-filter=Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.gif) | *.png *.jpg *.jpeg *.webp *.bmp *.gif *.PNG *.JPG *.JPEG *.WEBP *.BMP *.GIF")
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|s| !s.is_empty());
+
+                zenity
+                    .or_else(|| {
+                        std::process::Command::new("kdialog")
+                            .args(["--getopenfilename", ".", "*.png *.jpg *.jpeg *.webp *.bmp *.gif|Imagens"])
+                            .output()
+                            .ok()
+                            .filter(|o| o.status.success())
+                            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .map(std::path::PathBuf::from)
+            }
+        };
+
+        if let Some(path) = selected {
+            self.open_image_from_path(&path);
         }
     }
 
@@ -1228,7 +1350,7 @@ impl eframe::App for EditorApp {
         }
 
         // Initialize or update texture
-        if self.texture.is_none() {
+        if self.texture.is_none() && self.base_image.width() > 0 && self.base_image.height() > 0 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             let (w, h) = self.base_image.dimensions();
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
@@ -1454,6 +1576,10 @@ impl eframe::App for EditorApp {
                 self.auto_fit = false;
                 self.set_status(format!("Zoom: {:.0}%", self.zoom_scale * 100.0));
             }
+            if is_ctrl && ctx.input(|i| i.key_pressed(egui::Key::R)) {
+                let shift = ctx.input(|i| i.modifiers.shift);
+                self.rotate_90(!shift);
+            }
             if self.active_inline_text.is_none() && !is_ctrl {
                 if ctx.input(|i| i.key_pressed(egui::Key::H)) {
                     self.commit_inline_text();
@@ -1489,6 +1615,16 @@ impl eframe::App for EditorApp {
                     }
                     if ui.button("↷ Refazer").on_hover_text("Refazer (Ctrl+Shift+Z)").clicked() {
                         self.redo();
+                    }
+
+                    ui.separator();
+
+                    // Rotate
+                    if ui.button("↺ 90°").on_hover_text("Girar 90° para a esquerda (Ctrl+Shift+R)").clicked() {
+                        self.rotate_90_ccw();
+                    }
+                    if ui.button("↻ 90°").on_hover_text("Girar 90° para a direita (Ctrl+R)").clicked() {
+                        self.rotate_90_cw();
                     }
 
                     ui.separator();
@@ -2144,13 +2280,47 @@ impl eframe::App for EditorApp {
                 });
             });
 
+        // Handle drag-and-drop image files onto the editor window
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            if let Some(path) = file.path {
+                self.open_image_from_path(&path);
+            }
+        }
+
         // Central Canvas Area
         egui::CentralPanel::default().show(ctx, |ui| {
             let available_size = ui.available_size();
             let img_w = self.base_image.width() as f32;
             let img_h = self.base_image.height() as f32;
 
-            if img_w <= 0.0 || img_h <= 0.0 || available_size.x <= 10.0 || available_size.y <= 10.0 {
+            if available_size.x <= 10.0 || available_size.y <= 10.0 {
+                return;
+            }
+
+            if img_w <= 0.0 || img_h <= 0.0 {
+                ui.centered_and_justified(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space((available_size.y * 0.25).max(20.0));
+                        ui.label(egui::RichText::new("📷 BenderShot — Editor de Imagens").size(22.0).strong());
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Nenhuma imagem aberta. Abra um arquivo ou arraste uma imagem para esta janela.")
+                                .size(14.0)
+                                .weak(),
+                        );
+                        ui.add_space(16.0);
+                        let open_btn = egui::Button::new(
+                            egui::RichText::new("📂 Abrir Imagem...").color(Color32::WHITE).strong().size(15.0),
+                        )
+                        .fill(Color32::from_rgb(53, 132, 228))
+                        .rounding(Rounding::same(8.0))
+                        .min_size(Vec2::new(180.0, 38.0));
+                        if ui.add(open_btn).clicked() {
+                            self.open_image_dialog();
+                        }
+                    });
+                });
                 return;
             }
 

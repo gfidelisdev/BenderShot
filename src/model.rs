@@ -490,4 +490,70 @@ impl Scene {
             None => 1.0,
         }
     }
+
+    pub fn rotate_90_cw(&mut self, old_w: f32, old_h: f32) {
+        for item in &mut self.items {
+            item.rotate_90_cw(old_w, old_h);
+        }
+    }
+
+    pub fn rotate_90_ccw(&mut self, old_w: f32, old_h: f32) {
+        for item in &mut self.items {
+            item.rotate_90_ccw(old_w, old_h);
+        }
+    }
+}
+
+impl AnnotationItem {
+    /// Applies a coordinate mapping to every geometric point in this annotation,
+    /// re-normalizing axis-aligned bounding boxes afterward.
+    pub fn transform_points<F: Fn([f32; 2]) -> [f32; 2]>(&mut self, map: F) {
+        let norm_box = |min: &mut [f32; 2], max: &mut [f32; 2]| {
+            let a = map(*min);
+            let b = map(*max);
+            *min = [a[0].min(b[0]), a[1].min(b[1])];
+            *max = [a[0].max(b[0]), a[1].max(b[1])];
+        };
+
+        match self {
+            AnnotationItem::Freehand { points, .. } | AnnotationItem::Polygon { points, .. } => {
+                for p in points {
+                    *p = map(*p);
+                }
+            }
+            AnnotationItem::Bezier {
+                start,
+                control,
+                end,
+                ..
+            } => {
+                *start = map(*start);
+                *control = map(*control);
+                *end = map(*end);
+            }
+            AnnotationItem::Arrow { start, end, .. } => {
+                *start = map(*start);
+                *end = map(*end);
+            }
+            AnnotationItem::Rectangle { min, max, .. }
+            | AnnotationItem::Ellipse { min, max, .. }
+            | AnnotationItem::Highlight { min, max, .. }
+            | AnnotationItem::Obfuscate { min, max, .. } => {
+                norm_box(min, max);
+            }
+            AnnotationItem::Text { pos, .. } | AnnotationItem::StepBadge { pos, .. } => {
+                *pos = map(*pos);
+            }
+        }
+    }
+
+    /// Rotates coordinates 90 degrees clockwise within an image of `(old_w, old_h)`.
+    pub fn rotate_90_cw(&mut self, _old_w: f32, old_h: f32) {
+        self.transform_points(|[x, y]| [old_h - y, x]);
+    }
+
+    /// Rotates coordinates 90 degrees counter-clockwise within an image of `(old_w, old_h)`.
+    pub fn rotate_90_ccw(&mut self, old_w: f32, _old_h: f32) {
+        self.transform_points(|[x, y]| [y, old_w - x]);
+    }
 }

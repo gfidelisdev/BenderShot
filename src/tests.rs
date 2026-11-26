@@ -999,3 +999,108 @@ fn test_editor_ipc_listener_and_send() {
     assert!(!is_editor_active(), "Editor should report inactive after guard drop");
 }
 
+#[test]
+fn test_editor_rotate_90_cw_ccw_and_annotations() {
+    use crate::capture::CaptureMode;
+    use crate::model::AnnotationItem;
+    use crate::ui::editor::EditorApp;
+    use image::{Rgba, RgbaImage};
+
+    // 40x20 image with a distinct pixel at (0, 0)
+    let mut img = RgbaImage::new(40, 20);
+    img.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+
+    let mut app = EditorApp::new(img, None, CaptureMode::Fullscreen);
+    app.scene.push_item(AnnotationItem::Arrow {
+        start: [10.0, 5.0],
+        end: [30.0, 15.0],
+        color: [0, 255, 0, 255],
+        width: 2.0,
+    });
+    app.scene.push_item(AnnotationItem::Rectangle {
+        min: [2.0, 4.0],
+        max: [12.0, 14.0],
+        color: [0, 0, 255, 255],
+        width: 2.0,
+        fill: None,
+    });
+
+    // Rotate 90° CW -> 20x40; (0,0) -> (19, 0); (10,5) -> (15, 10)
+    app.rotate_90_cw();
+    assert_eq!(app.base_image.dimensions(), (20, 40));
+    assert_eq!(*app.base_image.get_pixel(19, 0), Rgba([255, 0, 0, 255]));
+    match &app.scene.items[0] {
+        AnnotationItem::Arrow { start, end, .. } => {
+            assert_eq!(*start, [15.0, 10.0]);
+            assert_eq!(*end, [5.0, 30.0]);
+        }
+        _ => panic!("expected arrow"),
+    }
+    match &app.scene.items[1] {
+        AnnotationItem::Rectangle { min, max, .. } => {
+            assert_eq!(*min, [6.0, 2.0]);
+            assert_eq!(*max, [16.0, 12.0]);
+        }
+        _ => panic!("expected rectangle"),
+    }
+
+    // Rotate 90° CCW -> back to 40x20 and original coordinates
+    app.rotate_90_ccw();
+    assert_eq!(app.base_image.dimensions(), (40, 20));
+    assert_eq!(*app.base_image.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+    match &app.scene.items[0] {
+        AnnotationItem::Arrow { start, end, .. } => {
+            assert_eq!(*start, [10.0, 5.0]);
+            assert_eq!(*end, [30.0, 15.0]);
+        }
+        _ => panic!("expected arrow"),
+    }
+}
+
+#[test]
+fn test_cli_positional_image_path_and_empty_edit() {
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+    use std::path::PathBuf;
+
+    let cli_pos = Cli::try_parse_from(["bendershot", "/tmp/example.png"]).expect("parse positional path");
+    assert!(cli_pos.command.is_none());
+    assert_eq!(cli_pos.path, Some(PathBuf::from("/tmp/example.png")));
+
+    let cli_edit_empty = Cli::try_parse_from(["bendershot", "edit"]).expect("parse empty edit");
+    match cli_edit_empty.command {
+        Some(Commands::Edit { path }) => assert!(path.is_none()),
+        _ => panic!("expected Edit command"),
+    }
+
+    let cli_edit_path = Cli::try_parse_from(["bendershot", "edit", "/tmp/a.jpg"]).expect("parse edit path");
+    match cli_edit_path.command {
+        Some(Commands::Edit { path }) => assert_eq!(path, Some(PathBuf::from("/tmp/a.jpg"))),
+        _ => panic!("expected Edit command"),
+    }
+
+    let cli_region = Cli::try_parse_from(["bendershot", "region"]).expect("parse region");
+    assert!(matches!(cli_region.command, Some(Commands::Region)));
+}
+
+#[test]
+fn test_empty_editor_replaces_placeholder_tab_on_open() {
+    use crate::capture::CaptureMode;
+    use crate::ui::editor::EditorApp;
+    use image::RgbaImage;
+
+    let mut app = EditorApp::new(RgbaImage::new(0, 0), None, CaptureMode::Fullscreen);
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.base_image.dimensions(), (0, 0));
+
+    app.add_new_tab_with_title(
+        RgbaImage::new(120, 80),
+        CaptureMode::Fullscreen,
+        "12:00:00".into(),
+        "📂 photo.png".into(),
+    );
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.base_image.dimensions(), (120, 80));
+    assert_eq!(app.tabs[0].title, "📂 photo.png");
+}
+

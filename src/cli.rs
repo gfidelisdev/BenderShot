@@ -5,6 +5,10 @@ use std::path::PathBuf;
 #[command(name = "bendershot")]
 #[command(author, version, about = "High-performance screenshot capture, screen recording, and annotation tool for Linux Wayland", long_about = None)]
 pub struct Cli {
+    /// Optional image file path to open directly in the Editor Window
+    #[arg(value_name = "IMAGE_PATH")]
+    pub path: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -23,10 +27,10 @@ pub enum Commands {
     /// Run resident background daemon with GNOME top-bar indicator
     Daemon,
 
-    /// Open an existing image file directly in the Editor Window
+    /// Open the Editor Window (optionally loading an existing image file)
     Edit {
         /// Path to the image file to open
-        path: PathBuf,
+        path: Option<PathBuf>,
     },
 
     /// Toggle screen recording (starts recording or stops active recording and opens video editor)

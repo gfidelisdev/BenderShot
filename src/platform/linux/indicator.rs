@@ -55,6 +55,14 @@ impl Tray for BenderShotTray {
                 ..Default::default()
             }
             .into(),
+            StandardItem {
+                label: "🖼️ Abrir Editor / Editar Imagem".into(),
+                activate: Box::new(|_| {
+                    spawn_edit();
+                }),
+                ..Default::default()
+            }
+            .into(),
             MenuItem::Separator,
             StandardItem {
                 label: "🧙 Assistente de Configuração".into(),
@@ -106,6 +114,11 @@ fn spawn_capture(mode: CaptureMode) {
 fn spawn_record() {
     let exe = crate::platform::linux::shortcuts::get_executable_command();
     let _ = Command::new(exe).arg("record").spawn();
+}
+
+fn spawn_edit() {
+    let exe = crate::platform::linux::shortcuts::get_executable_command();
+    let _ = Command::new(exe).arg("edit").spawn();
 }
 
 fn spawn_settings() {
